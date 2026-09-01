@@ -110,8 +110,11 @@
           <div><strong>Drop an Excel file here</strong></div>
           <div class="sub">.xlsx, .xls or .csv</div>
           <button class="icon-btn primary" type="button" id="btnBrowse" style="margin-top:14px">Choose file</button>
-          <input type="file" id="file" accept=".xlsx,.xls,.csv" class="sr-only">
+          <input type="file" id="file" class="sr-only"
+            accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/comma-separated-values">
         </div>
+
+        <p class="note hide" id="fileStatus" style="margin-top:10px"></p>
 
         <div class="row wrap" style="margin-top:10px">
           <button class="icon-btn sm" id="btnTemplate">Download template</button>

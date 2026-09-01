@@ -193,31 +193,49 @@
     return { headers: headers, rows: rows };
   }
 
+  function fileStatus(msg, kind) {
+    var el = $('fileStatus');
+    el.classList.remove('hide');
+    el.innerHTML = '<span class="pill ' + (kind || '') + '">' + esc(msg) + '</span>';
+  }
+
   function readFile(file) {
     var reader = new FileReader();
+    fileStatus('Reading ' + file.name + '\u2026');
+
     reader.onerror = function () {
-      toast("Couldn't open " + file.name + '.', 'err', 5000);
+      fileStatus("Couldn't open " + file.name + '. Try re-saving it as .xlsx.', 'err');
+      toast("Couldn't open that file.", 'err', 5000);
+      $('file').value = '';
     };
     reader.onload = function (e) {
+      $('file').value = '';   // safe now: the bytes are already read
       try {
         var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-        if (!wb.SheetNames.length) { toast('That file has no sheets in it.', 'err'); return; }
+        if (!wb.SheetNames.length) {
+          fileStatus('That file has no sheets in it.', 'err');
+          toast('That file has no sheets in it.', 'err'); return;
+        }
         var parsed = sheetToRows(wb.Sheets[wb.SheetNames[0]]);
         if (!parsed.headers.length) {
-          toast("Couldn't find a header row in that sheet - the first row should " +
-                'be the column names.', 'err', 6000);
+          fileStatus("No header row found in '" + wb.SheetNames[0] +
+                     "' - one row should hold the column names.", 'err');
+          toast("Couldn't find a header row in that sheet.", 'err', 6000);
           return;
         }
         if (!parsed.rows.length) {
+          fileStatus('Found the column names but no rows underneath them.', 'err');
           toast('Found the column names but no rows underneath them.', 'err', 5000);
           return;
         }
         pendingRows = parsed.rows;
         pendingHeaders = parsed.headers;
         renderColumnMapper();
-        toast(parsed.rows.length + ' rows read from ' + file.name +
-              ' - check the columns, then Import.', 'ok', 5000);
+        fileStatus(parsed.rows.length + ' rows read from ' + file.name +
+                   ' \u2014 check the columns below, then Import.', 'ok');
+        toast(parsed.rows.length + ' rows read - check the columns, then Import.', 'ok', 5000);
       } catch (err) {
+        fileStatus("Couldn't read that file: " + err.message, 'err');
         toast("Couldn't read that file: " + err.message, 'err', 6000);
       }
     };
@@ -1116,7 +1134,10 @@
     });
     file.addEventListener('change', function () {
       if (file.files && file.files[0]) readFile(file.files[0]);
-      file.value = '';
+      // NOTE: the input is deliberately NOT cleared here. Safari backs the File
+      // object with the input's selection, so clearing it while FileReader is
+      // still working kills the read with no error. readFile() clears it once
+      // the bytes are in hand.
     });
     ['dragenter', 'dragover'].forEach(function (ev) {
       drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
