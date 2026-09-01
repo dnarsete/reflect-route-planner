@@ -23,6 +23,10 @@ a{color:var(--brand)}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer}
 .hide{display:none !important}
+/* Hidden from view but still clickable - display:none file inputs refuse to
+   open the picker in some browsers. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 
 /* ===== Shell ===== */
 .app{display:grid;grid-template-rows:auto 1fr auto;min-height:100dvh}

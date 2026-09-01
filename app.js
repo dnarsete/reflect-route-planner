@@ -152,20 +152,73 @@
     return '';
   }
 
+  /* Real spreadsheets often carry a title row, a blank row, or a logo above the
+     column names, so the header row is detected rather than assumed to be row 1.
+     The winning row is the one with the most cells that look like column names. */
+  function sheetToRows(ws) {
+    var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+    var best = -1, bestScore = -1, i;
+
+    for (i = 0; i < Math.min(aoa.length, 15); i++) {
+      var cells = (aoa[i] || []).filter(function (c) { return String(c).trim() !== ''; });
+      if (cells.length < 2) continue;
+      var lower = cells.map(function (c) { return String(c).toLowerCase().trim(); });
+      var score = cells.length;
+      Object.keys(COL_HINTS).forEach(function (key) {
+        var hit = lower.some(function (c) {
+          return COL_HINTS[key].some(function (h) { return c === h || c.indexOf(h) !== -1; });
+        });
+        if (hit) score += 3;
+      });
+      if (score > bestScore) { bestScore = score; best = i; }
+    }
+    if (best < 0) return { headers: [], rows: [] };
+
+    var headers = [], seen = {};
+    aoa[best].forEach(function (h, idx) {
+      var name = String(h).trim() || ('Column ' + (idx + 1));
+      if (seen[name]) { seen[name]++; name = name + ' (' + seen[name] + ')'; }
+      else seen[name] = 1;
+      headers.push(name);
+    });
+
+    var rows = [];
+    for (i = best + 1; i < aoa.length; i++) {
+      var row = aoa[i] || [];
+      if (!row.some(function (c) { return String(c).trim() !== ''; })) continue;
+      var obj = {};
+      headers.forEach(function (h, idx) { obj[h] = row[idx] == null ? '' : row[idx]; });
+      rows.push(obj);
+    }
+    return { headers: headers, rows: rows };
+  }
+
   function readFile(file) {
     var reader = new FileReader();
+    reader.onerror = function () {
+      toast("Couldn't open " + file.name + '.', 'err', 5000);
+    };
     reader.onload = function (e) {
       try {
         var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-        var ws = wb.Sheets[wb.SheetNames[0]];
-        var rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false });
-        if (!rows.length) { toast('That sheet looks empty.', 'err'); return; }
-        pendingRows = rows;
-        pendingHeaders = Object.keys(rows[0]);
+        if (!wb.SheetNames.length) { toast('That file has no sheets in it.', 'err'); return; }
+        var parsed = sheetToRows(wb.Sheets[wb.SheetNames[0]]);
+        if (!parsed.headers.length) {
+          toast("Couldn't find a header row in that sheet - the first row should " +
+                'be the column names.', 'err', 6000);
+          return;
+        }
+        if (!parsed.rows.length) {
+          toast('Found the column names but no rows underneath them.', 'err', 5000);
+          return;
+        }
+        pendingRows = parsed.rows;
+        pendingHeaders = parsed.headers;
         renderColumnMapper();
-        toast(rows.length + ' rows read from ' + file.name, 'ok');
+        toast(parsed.rows.length + ' rows read from ' + file.name +
+              ' - check the columns, then Import.', 'ok', 5000);
       } catch (err) {
-        toast("Couldn't read that file: " + err.message, 'err', 5000);
+        toast("Couldn't read that file: " + err.message, 'err', 6000);
       }
     };
     reader.readAsArrayBuffer(file);
@@ -187,6 +240,9 @@
       return '<div><label>' + labels[k] + '</label><select data-col="' + k + '">' + opts + '</select></div>';
     }).join('');
     $('mapCols').classList.remove('hide');
+    setTimeout(function () {
+      $('mapCols').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
   }
 
   function doImport() {
@@ -1047,7 +1103,17 @@
 
     // File upload
     var drop = $('drop'), file = $('file');
-    drop.addEventListener('click', function () { file.click(); });
+    drop.addEventListener('click', function (e) {
+      // The input lives inside the drop zone, so its own programmatic click
+      // bubbles straight back here. Without this guard the picker is asked to
+      // open twice and the second request cancels the first.
+      if (e.target === file || e.target.id === 'btnBrowse') return;
+      file.click();
+    });
+    $('btnBrowse').addEventListener('click', function (e) {
+      e.stopPropagation();
+      file.click();
+    });
     file.addEventListener('change', function () {
       if (file.files && file.files[0]) readFile(file.files[0]);
       file.value = '';
