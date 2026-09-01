@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a2240">
+<title>Reflect Route Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark">R</div>
+      <div class="grow">
+        <div class="brand-name">Route Planner</div>
+        <div class="brand-sub" id="brandSub">No stops loaded</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="icon-btn primary" id="btnPlan">Plan route</button>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ========== TAB: STOPS ========== -->
+    <section id="tab-stops">
+
+      <div class="card">
+        <h2>1. Start &amp; end</h2>
+        <p class="hint">Where the day begins and ends. Traffic-aware timing uses your start time.</p>
+        <div class="grid-2">
+          <div>
+            <label for="startAddr">Starting point</label>
+            <input id="startAddr" placeholder="1234 Main St, Denver, CO 80202" autocomplete="off">
+          </div>
+          <div>
+            <label for="startTime">Leave at</label>
+            <input id="startTime" type="time" value="08:00">
+          </div>
+        </div>
+        <div class="check">
+          <input type="checkbox" id="roundTrip" checked>
+          <label for="roundTrip">End back at the starting point</label>
+        </div>
+        <div id="endWrap" class="hide">
+          <label for="endAddr">Ending point</label>
+          <input id="endAddr" placeholder="Hotel, airport, or home address" autocomplete="off">
+        </div>
+        <div class="row wrap" style="margin-top:10px">
+          <button class="icon-btn sm ghost" id="btnUseLocation">Use my current location</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>2. Timing</h2>
+        <p class="hint">Buffer is padding added between stops on top of drive time &mdash; for parking, notes, and running long.</p>
+        <div class="grid-3">
+          <div>
+            <label for="visitMin">Default time per stop (min)</label>
+            <input id="visitMin" type="number" min="5" max="480" step="5" value="30">
+          </div>
+          <div>
+            <label for="bufMin">Minimum buffer (min)</label>
+            <input id="bufMin" type="number" min="0" max="180" step="5" value="15">
+          </div>
+          <div>
+            <label for="bufMax">Maximum buffer (min)</label>
+            <input id="bufMax" type="number" min="0" max="240" step="5" value="60">
+          </div>
+        </div>
+        <details class="adv">
+          <summary>Advanced</summary>
+          <div class="grid-2" style="margin-top:10px">
+            <div>
+              <label for="dayEnd">Be done by (optional)</label>
+              <input id="dayEnd" type="time">
+            </div>
+            <div>
+              <label for="lunchMin">Lunch break (min, 0 = none)</label>
+              <input id="lunchMin" type="number" min="0" max="180" step="15" value="0">
+            </div>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="lockOrder">
+            <label for="lockOrder">Keep my order &mdash; don't re-sequence the stops</label>
+          </div>
+          <div>
+            <label for="gKey">Google Maps API key (optional)</label>
+            <input id="gKey" placeholder="Leave blank to use the free routing engine" autocomplete="off">
+            <p class="note" style="margin-top:6px">
+              Blank is fine. Without a key the app routes on real roads with typical
+              speeds, then hands the finished route to Google Maps or Waze for live-traffic
+              turn-by-turn. With a key, drive times are calculated against Google's
+              predicted traffic for your departure time.
+            </p>
+          </div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>3. Stops</h2>
+        <p class="hint">Upload a spreadsheet with names, addresses and phone numbers &mdash; or add stops by hand.</p>
+
+        <div class="drop" id="drop">
+          <div class="big">&#128202;</div>
+          <div><strong>Drop an Excel file here</strong></div>
+          <div class="sub">.xlsx, .xls or .csv &mdash; or tap to browse</div>
+          <input type="file" id="file" accept=".xlsx,.xls,.csv" class="hide">
+        </div>
+
+        <div class="row wrap" style="margin-top:10px">
+          <button class="icon-btn sm" id="btnTemplate">Download template</button>
+          <button class="icon-btn sm" id="btnAddRow">Add stop manually</button>
+          <button class="icon-btn sm" id="btnGeocode">Look up addresses</button>
+          <button class="icon-btn sm danger" id="btnClear">Clear all</button>
+        </div>
+
+        <div id="mapCols" class="hide" style="margin-top:14px">
+          <p class="note" style="margin-bottom:8px">Match your spreadsheet columns:</p>
+          <div class="grid-3" id="mapColsGrid"></div>
+          <div class="row" style="margin-top:10px">
+            <button class="icon-btn sm primary" id="btnImport">Import stops</button>
+            <button class="icon-btn sm ghost" id="btnCancelImport">Cancel</button>
+          </div>
+        </div>
+
+        <div id="geoProgress" class="hide" style="margin-top:12px">
+          <div class="progress"><i id="geoBar"></i></div>
+          <p class="note" style="margin-top:6px" id="geoMsg"></p>
+        </div>
+
+        <div id="stopsEmpty" class="empty">
+          <div class="big">&#128205;</div>
+          <div>No stops yet.</div>
+        </div>
+
+        <div id="stopsTable" class="table-wrap hide" style="margin-top:12px">
+          <table>
+            <thead>
+              <tr>
+                <th class="num">#</th>
+                <th>Name</th>
+                <th>Address</th>
+                <th>Phone</th>
+                <th style="width:92px">Min</th>
+                <th style="width:120px">Fixed time</th>
+                <th style="width:90px">Located</th>
+                <th style="width:56px"></th>
+              </tr>
+            </thead>
+            <tbody id="stopsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: ROUTE ========== -->
+    <section id="tab-route" class="hide">
+      <div id="routeEmpty" class="empty">
+        <div class="big">&#128506;</div>
+        <div>No route yet.</div>
+        <p class="note" style="margin-top:8px">Add your stops, then tap <strong>Plan route</strong>.</p>
+      </div>
+
+      <div id="routeOut" class="hide">
+        <div class="stat-row">
+          <div class="stat"><div class="k">Stops</div><div class="v" id="statStops">&mdash;</div></div>
+          <div class="stat"><div class="k">Drive time</div><div class="v" id="statDrive">&mdash;</div></div>
+          <div class="stat"><div class="k">Miles</div><div class="v" id="statMiles">&mdash;</div></div>
+          <div class="stat"><div class="k">Finish</div><div class="v" id="statEnd">&mdash;</div></div>
+        </div>
+
+        <div class="card">
+          <div class="row wrap">
+            <button class="icon-btn sm primary" id="btnGmaps">Open in Google Maps</button>
+            <button class="icon-btn sm" id="btnExport">Export itinerary (Excel)</button>
+            <button class="icon-btn sm ghost" id="btnCopy">Copy itinerary</button>
+            <button class="icon-btn sm ghost" id="btnPrint">Print</button>
+          </div>
+          <p class="note" id="gmapsNote" style="margin-top:10px"></p>
+        </div>
+
+        <div class="card">
+          <h2>Itinerary</h2>
+          <p class="hint" id="itinHint"></p>
+          <div id="itinerary"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: MAP ========== -->
+    <section id="tab-map" class="hide">
+      <div class="card">
+        <h2>Map</h2>
+        <p class="hint" id="mapHint">Plan a route to see it drawn here.</p>
+        <div id="map"></div>
+      </div>
+    </section>
+
+    <!-- ========== TAB: HELP ========== -->
+    <section id="tab-help" class="hide">
+      <div class="card">
+        <h2>How it works</h2>
+        <p class="note">
+          <strong>1. Set your start and end.</strong> Type the address you leave from and the time
+          you pull out. Check the box to loop back to the same place at the end of the day.
+        </p>
+        <p class="note" style="margin-top:10px">
+          <strong>2. Load your stops.</strong> Upload an Excel file with a name, address and phone
+          column. The app finds the columns automatically; if it guesses wrong you can remap them.
+          Then it looks up each address on the map.
+        </p>
+        <p class="note" style="margin-top:10px">
+          <strong>3. Plan.</strong> The planner tests thousands of possible orderings and keeps the
+          one with the least windshield time, so more of the day is spent in front of accounts.
+          Stops with a fixed appointment time stay locked to that time and everything else is
+          arranged around them.
+        </p>
+        <p class="note" style="margin-top:10px">
+          <strong>4. Drive it.</strong> Open the whole day in Google Maps, or navigate one stop at a
+          time in Google Maps, Waze or Apple Maps &mdash; those apps carry the live traffic and
+          re-routing.
+        </p>
+      </div>
+      <div class="card">
+        <h2>Spreadsheet format</h2>
+        <p class="note">
+          One row per stop. Column headers can be named anything close to these &mdash;
+          <code class="k">Name</code>, <code class="k">Address</code>, <code class="k">Phone</code>.
+          Optional extras it will pick up: <code class="k">City</code>, <code class="k">State</code>,
+          <code class="k">Zip</code>, <code class="k">Minutes</code> (time needed at that stop),
+          <code class="k">Time</code> (a fixed appointment), <code class="k">Notes</code>.
+        </p>
+        <button class="icon-btn sm" id="btnTemplate2" style="margin-top:10px">Download template</button>
+      </div>
+      <div class="card">
+        <h2>Google Maps API key</h2>
+        <p class="note">
+          Optional. Without one, the app uses a free open routing service for drive times and
+          hands off to Google Maps or Waze for the actual navigation &mdash; that covers live
+          traffic while you drive. Adding a key makes the <em>planning</em> itself
+          traffic-aware: Google predicts what each leg will take at your departure time and
+          sequences the day around it. A key requires a Google Cloud account with billing
+          enabled.
+        </p>
+      </div>
+      <div class="card">
+        <h2>Data</h2>
+        <p class="note">
+          Everything stays in this browser &mdash; your stops, addresses and settings are saved
+          locally on this device only. Addresses are sent to the mapping service to be located,
+          and nothing else leaves the app.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="bottom-nav">
+    <button class="nav-btn active" data-tab="stops"><span class="ico">&#128203;</span>Stops</button>
+    <button class="nav-btn" data-tab="route"><span class="ico">&#128340;</span>Route</button>
+    <button class="nav-btn" data-tab="map"><span class="ico">&#128506;</span>Map</button>
+    <button class="nav-btn" data-tab="help"><span class="ico">&#10067;</span>Help</button>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
