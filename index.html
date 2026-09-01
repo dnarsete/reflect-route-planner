@@ -114,7 +114,10 @@
             accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/comma-separated-values">
         </div>
 
-        <p class="note hide" id="fileStatus" style="margin-top:10px"></p>
+        <div class="hide" id="fileStatusWrap" style="margin-top:10px">
+          <p class="note" id="fileStatus"></p>
+          <button class="icon-btn sm ghost hide" id="btnRemap" style="margin-top:8px">Change column mapping</button>
+        </div>
 
         <div class="row wrap" style="margin-top:10px">
           <button class="icon-btn sm" id="btnTemplate">Download template</button>

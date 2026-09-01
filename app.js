@@ -130,7 +130,7 @@
   }
 
   /* ============================ spreadsheet import ============================ */
-  var pendingRows = null, pendingHeaders = null;
+  var pendingRows = null, pendingHeaders = null, pendingName = '', lastBatch = null;
 
   var COL_HINTS = {
     name:    ['name', 'account', 'company', 'customer', 'client', 'business', 'contact', 'location', 'store'],
@@ -193,14 +193,25 @@
     return { headers: headers, rows: rows };
   }
 
-  function fileStatus(msg, kind) {
-    var el = $('fileStatus');
-    el.classList.remove('hide');
-    el.innerHTML = '<span class="pill ' + (kind || '') + '">' + esc(msg) + '</span>';
+  function fileStatus(msg, kind, offerRemap) {
+    $('fileStatusWrap').classList.remove('hide');
+    $('fileStatus').innerHTML = '<span class="pill ' + (kind || '') + '">' + esc(msg) + '</span>';
+    $('btnRemap').classList.toggle('hide', !offerRemap);
   }
 
   function readFile(file) {
+    var ext = (file.name.split('.').pop() || '').toLowerCase();
+    var cantRead = {
+      numbers: 'Numbers files can\u2019t be read here. In Numbers: File \u203a Export To \u203a Excel, then upload the .xlsx.',
+      pages:   'That\u2019s a Pages document, not a spreadsheet.',
+      pdf:     'That\u2019s a PDF, not a spreadsheet.',
+      docx:    'That\u2019s a Word document, not a spreadsheet.',
+      doc:     'That\u2019s a Word document, not a spreadsheet.'
+    };
+    if (cantRead[ext]) { fileStatus(cantRead[ext], 'err'); toast(cantRead[ext], 'err', 6000); return; }
+
     var reader = new FileReader();
+    pendingName = file.name;
     fileStatus('Reading ' + file.name + '\u2026');
 
     reader.onerror = function () {
@@ -230,10 +241,19 @@
         }
         pendingRows = parsed.rows;
         pendingHeaders = parsed.headers;
-        renderColumnMapper();
-        fileStatus(parsed.rows.length + ' rows read from ' + file.name +
-                   ' \u2014 check the columns below, then Import.', 'ok');
-        toast(parsed.rows.length + ' rows read - check the columns, then Import.', 'ok', 5000);
+
+        // If the address column is obvious, import on the spot. Making the user
+        // find and press a second button after choosing a file is the single
+        // easiest way for this to look broken when it isn't.
+        if (guessColumn(pendingHeaders, 'address') ||
+            (guessColumn(pendingHeaders, 'city') && guessColumn(pendingHeaders, 'zip'))) {
+          doImport(true);
+        } else {
+          renderColumnMapper();
+          fileStatus(parsed.rows.length + ' rows read from ' + file.name +
+                     ' \u2014 tell it which column holds the address, then Import.', 'warn');
+          toast("Read the file, but couldn't spot an address column.", 'err', 5000);
+        }
       } catch (err) {
         fileStatus("Couldn't read that file: " + err.message, 'err');
         toast("Couldn't read that file: " + err.message, 'err', 6000);
@@ -263,23 +283,33 @@
     }, 80);
   }
 
-  function doImport() {
+  function doImport(auto) {
     var pick = {};
-    Array.prototype.forEach.call($('mapColsGrid').querySelectorAll('select'), function (s) {
-      pick[s.dataset.col] = s.value;
-    });
+    if (auto) {
+      ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time', 'notes']
+        .forEach(function (k) { pick[k] = guessColumn(pendingHeaders, k); });
+    } else {
+      Array.prototype.forEach.call($('mapColsGrid').querySelectorAll('select'), function (s) {
+        pick[s.dataset.col] = s.value;
+      });
+    }
     if (!pick.address && !pick.city && !pick.zip) {
       toast('Pick at least an address column.', 'err'); return;
     }
-    var added = 0;
+    // Re-importing the same file replaces its stops rather than doubling them.
+    if (lastBatch) {
+      state.stops = state.stops.filter(function (x) { return x.batch !== lastBatch; });
+    }
+    var batch = uid();
+    var added = 0, skipped = 0;
     pendingRows.forEach(function (r) {
       var get = function (k) { return pick[k] ? String(r[pick[k]] || '').trim() : ''; };
       var parts = [get('address'), get('city'), [get('state'), get('zip')].filter(Boolean).join(' ')];
       var addr = parts.filter(Boolean).join(', ');
-      if (!addr) return;
+      if (!addr) { skipped++; return; }
       var mins = parseInt(get('minutes'), 10);
       state.stops.push({
-        id: uid(),
+        id: uid(), batch: batch,
         name: get('name') || addr,
         address: addr,
         phone: get('phone'),
@@ -290,10 +320,21 @@
       });
       added++;
     });
-    pendingRows = pendingHeaders = null;
+    lastBatch = batch;
     $('mapCols').classList.add('hide');
     save(); renderStops();
-    toast(added + ' stops imported. Looking up addresses...', 'ok');
+
+    if (!added) {
+      fileStatus('No usable addresses in ' + pendingName +
+                 ' \u2014 check which column is mapped to Address.', 'err', true);
+      toast('No usable addresses found.', 'err', 5000);
+      renderColumnMapper();
+      return;
+    }
+    fileStatus(added + ' stops imported from ' + pendingName +
+               (skipped ? ' (' + skipped + ' rows had no address)' : '') +
+               ' \u2014 looking up addresses\u2026', 'ok', true);
+    toast(added + ' stops imported. Looking up addresses\u2026', 'ok');
     geocodeAll();
   }
 
@@ -1149,7 +1190,11 @@
       if (e.dataTransfer.files && e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
     });
 
-    $('btnImport').addEventListener('click', doImport);
+    $('btnImport').addEventListener('click', function () { doImport(false); });
+    $('btnRemap').addEventListener('click', function () {
+      if (!pendingHeaders) { toast('Upload a file first.', 'err'); return; }
+      renderColumnMapper();
+    });
     $('btnCancelImport').addEventListener('click', function () {
       pendingRows = pendingHeaders = null;
       $('mapCols').classList.add('hide');
