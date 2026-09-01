@@ -131,6 +131,7 @@
 
   /* ============================ spreadsheet import ============================ */
   var pendingRows = null, pendingHeaders = null, pendingName = '', lastBatch = null;
+  var pendingSheets = null;   // every sheet in the uploaded workbook
 
   var COL_HINTS = {
     name:    ['name', 'account', 'company', 'customer', 'client', 'business', 'contact', 'location', 'store'],
@@ -141,7 +142,9 @@
     phone:   ['phone', 'telephone', 'tel', 'mobile', 'cell', 'phone number'],
     minutes: ['minutes', 'min', 'duration', 'time needed', 'length', 'visit'],
     time:    ['time', 'appointment', 'appt', 'fixed time', 'scheduled'],
-    notes:   ['notes', 'note', 'comment', 'comments', 'detail', 'details']
+    notes:   ['notes', 'note', 'comment', 'comments', 'detail', 'details'],
+    lat:     ['lat', 'latitude'],
+    lng:     ['lng', 'long', 'longitude', 'lon']
   };
 
   function guessColumn(headers, key) {
@@ -227,18 +230,29 @@
           fileStatus('That file has no sheets in it.', 'err');
           toast('That file has no sheets in it.', 'err'); return;
         }
-        var parsed = sheetToRows(wb.Sheets[wb.SheetNames[0]]);
-        if (!parsed.headers.length) {
-          fileStatus("No header row found in '" + wb.SheetNames[0] +
-                     "' - one row should hold the column names.", 'err');
-          toast("Couldn't find a header row in that sheet.", 'err', 6000);
+        // A workbook often carries a cover sheet, a totals tab, or notes
+        // alongside the data. Parse them all and pick the one that actually
+        // looks like a stop list; the rest stay available in a dropdown.
+        pendingSheets = wb.SheetNames.map(function (nm) {
+          var pr = sheetToRows(wb.Sheets[nm]);
+          var addr = pr.headers.length ? guessColumn(pr.headers, 'address') : '';
+          var zip = pr.headers.length ? guessColumn(pr.headers, 'zip') : '';
+          return {
+            name: nm, headers: pr.headers, rows: pr.rows,
+            // Row count deliberately does NOT feed the score: when two sheets
+            // both look like stop lists, the one the author put first wins.
+            score: (addr ? 10000 : 0) + (zip ? 5000 : 0) + (pr.rows.length ? 1 : 0)
+          };
+        });
+        var usable = pendingSheets.filter(function (x) { return x.rows.length; });
+        if (!usable.length) {
+          fileStatus('No rows of data found in that workbook.', 'err');
+          toast('No rows of data found in that workbook.', 'err', 5000);
           return;
         }
-        if (!parsed.rows.length) {
-          fileStatus('Found the column names but no rows underneath them.', 'err');
-          toast('Found the column names but no rows underneath them.', 'err', 5000);
-          return;
-        }
+        var best = usable.slice().sort(function (a, b) { return b.score - a.score; })[0];
+        renderSheetPicker(best.name);
+        var parsed = { headers: best.headers, rows: best.rows };
         pendingRows = parsed.rows;
         pendingHeaders = parsed.headers;
 
@@ -262,11 +276,39 @@
     reader.readAsArrayBuffer(file);
   }
 
+  function renderSheetPicker(selected) {
+    var wrap = $('sheetPickWrap');
+    if (!pendingSheets || pendingSheets.length < 2) { wrap.classList.add('hide'); return; }
+    $('sheetPick').innerHTML = pendingSheets.map(function (sh) {
+      return '<option value="' + esc(sh.name) + '"' + (sh.name === selected ? ' selected' : '') + '>' +
+             esc(sh.name) + ' (' + sh.rows.length + ' rows)</option>';
+    }).join('');
+    wrap.classList.remove('hide');
+  }
+
+  function useSheet(name) {
+    var sh = null;
+    (pendingSheets || []).forEach(function (x) { if (x.name === name) sh = x; });
+    if (!sh) return;
+    pendingHeaders = sh.headers;
+    pendingRows = sh.rows;
+    if (guessColumn(pendingHeaders, 'address') ||
+        (guessColumn(pendingHeaders, 'city') && guessColumn(pendingHeaders, 'zip'))) {
+      doImport(true);
+    } else {
+      renderColumnMapper();
+      fileStatus("Sheet '" + name + "' has " + sh.rows.length +
+                 ' rows - tell it which column holds the address, then Import.', 'warn');
+    }
+  }
+
   function renderColumnMapper() {
-    var keys = ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time', 'notes'];
+    var keys = ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time',
+                'notes', 'lat', 'lng'];
     var labels = {
       name: 'Name', address: 'Address', city: 'City', state: 'State', zip: 'Zip',
-      phone: 'Phone', minutes: 'Minutes at stop', time: 'Fixed time', notes: 'Notes'
+      phone: 'Phone', minutes: 'Minutes at stop', time: 'Fixed time', notes: 'Notes',
+      lat: 'Latitude (optional)', lng: 'Longitude (optional)'
     };
     $('mapColsGrid').innerHTML = keys.map(function (k) {
       var guess = guessColumn(pendingHeaders, k);
@@ -286,8 +328,8 @@
   function doImport(auto) {
     var pick = {};
     if (auto) {
-      ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time', 'notes']
-        .forEach(function (k) { pick[k] = guessColumn(pendingHeaders, k); });
+      ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time', 'notes',
+       'lat', 'lng'].forEach(function (k) { pick[k] = guessColumn(pendingHeaders, k); });
     } else {
       Array.prototype.forEach.call($('mapColsGrid').querySelectorAll('select'), function (s) {
         pick[s.dataset.col] = s.value;
@@ -301,13 +343,19 @@
       state.stops = state.stops.filter(function (x) { return x.batch !== lastBatch; });
     }
     var batch = uid();
-    var added = 0, skipped = 0;
+    var added = 0, skipped = 0, preLocated = 0;
     pendingRows.forEach(function (r) {
       var get = function (k) { return pick[k] ? String(r[pick[k]] || '').trim() : ''; };
       var parts = [get('address'), get('city'), [get('state'), get('zip')].filter(Boolean).join(' ')];
       var addr = parts.filter(Boolean).join(', ');
       if (!addr) { skipped++; return; }
       var mins = parseInt(get('minutes'), 10);
+      // A sheet that already carries coordinates skips geocoding entirely -
+      // no rate limit, no failed lookups on messy suite numbers.
+      var la = parseFloat(get('lat')), ln = parseFloat(get('lng'));
+      var haveCoords = isFinite(la) && isFinite(ln) &&
+                       la >= -90 && la <= 90 && ln >= -180 && ln <= 180 &&
+                       !(la === 0 && ln === 0);
       state.stops.push({
         id: uid(), batch: batch,
         name: get('name') || addr,
@@ -316,8 +364,11 @@
         notes: get('notes'),
         minutes: isFinite(mins) && mins > 0 ? mins : null,
         fixed: normalizeTimeCell(get('time')),
-        lat: null, lng: null, geo: 'pending'
+        lat: haveCoords ? la : null,
+        lng: haveCoords ? ln : null,
+        geo: haveCoords ? 'ok' : 'pending'
       });
+      if (haveCoords) preLocated++;
       added++;
     });
     lastBatch = batch;
@@ -333,7 +384,8 @@
     }
     fileStatus(added + ' stops imported from ' + pendingName +
                (skipped ? ' (' + skipped + ' rows had no address)' : '') +
-               ' \u2014 looking up addresses\u2026', 'ok', true);
+               (preLocated === added ? ' \u2014 coordinates already in the sheet, nothing to look up.'
+                                     : ' \u2014 looking up addresses\u2026'), 'ok', true);
     toast(added + ' stops imported. Looking up addresses\u2026', 'ok');
     geocodeAll();
   }
@@ -442,8 +494,48 @@
     });
   }
 
+  /* Free-text geocoders choke on "Suite 320", "Unit D4", "Bldg L" and on a
+     missing comma before the city. Each failed lookup is retried against
+     progressively simpler versions of the same address. */
+  function addressVariants(addr) {
+    var out = [addr];
+    var stripped = addr
+      .replace(/\b(suite|ste|unit|apt|apartment|bldg|building|floor|fl|rm|room)\s*\.?\s*[#]?\s*[\w-]+/gi, ' ')
+      .replace(/#\s*[\w-]+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/\s*,\s*,+/g, ',')
+      .replace(/^[\s,]+|[\s,]+$/g, '');
+    if (stripped && stripped !== addr) out.push(stripped);
+
+    // "<number> <street>, <city>, <ST> <zip>" rebuilt from the ends of the string
+    var zip = /\b(\d{5})(?:-\d{4})?\b/.exec(stripped);
+    var st = /\b([A-Z]{2})\b(?=[\s,]*\d{5})/.exec(stripped.toUpperCase());
+    var num = /^\s*(\d+[\w-]*\s+[^,]+?)(?=,|\s+[A-Z][a-z])/.exec(stripped);
+    if (zip && st && num) {
+      var rebuilt = num[1].trim() + ', ' + st[1] + ' ' + zip[1];
+      if (out.indexOf(rebuilt) === -1) out.push(rebuilt);
+    }
+    return out;
+  }
+
   function geocode(addr) {
-    return useGoogle() ? geocodeGoogle(addr) : geocodeOSM(addr);
+    var fn = useGoogle() ? geocodeGoogle : geocodeOSM;
+    var variants = addressVariants(addr);
+    var i = 0;
+    function attempt() {
+      if (i >= variants.length) return Promise.resolve(null);
+      var v = variants[i++];
+      return fn(v).then(function (hit) {
+        if (hit) {
+          if (i > 1) geoCache[cacheKey(addr)] = hit;   // remember it for the original too
+          return hit;
+        }
+        return i < variants.length ? sleep(1100).then(attempt) : null;
+      }).catch(function () {
+        return i < variants.length ? sleep(1100).then(attempt) : null;
+      });
+    }
+    return attempt();
   }
 
   function progress(done, total, msg) {
@@ -1191,6 +1283,7 @@
     });
 
     $('btnImport').addEventListener('click', function () { doImport(false); });
+    $('sheetPick').addEventListener('change', function () { useSheet(this.value); });
     $('btnRemap').addEventListener('click', function () {
       if (!pendingHeaders) { toast('Upload a file first.', 'err'); return; }
       renderColumnMapper();
