@@ -90,7 +90,7 @@
 
   /* ============================ tabs ============================ */
   function showTab(name) {
-    ['stops', 'route', 'map', 'help'].forEach(function (t) {
+    ['find', 'stops', 'route', 'map', 'help'].forEach(function (t) {
       var el = $('tab-' + t);
       if (el) el.classList.toggle('hide', t !== name);
     });
@@ -1359,6 +1359,35 @@
       showTab('route'); setTimeout(function () { window.print(); }, 120);
     });
   }
+
+  /* Minimal surface for search.js: push found accounts straight into the
+     planner's stop list, then jump to the Stops tab so they can be planned. */
+  window.RP_APP = {
+    addStops: function (rows) {
+      var batch = uid(), added = 0;
+      (rows || []).forEach(function (r) {
+        if (!r || !r.address) return;
+        state.stops.push({
+          id: uid(), batch: batch,
+          name: r.name || r.address,
+          address: r.address,
+          phone: r.phone || '',
+          notes: r.notes || '',
+          minutes: r.minutes || null,
+          fixed: '',
+          lat: (typeof r.lat === 'number') ? r.lat : null,
+          lng: (typeof r.lng === 'number') ? r.lng : null,
+          geo: (typeof r.lat === 'number' && typeof r.lng === 'number') ? 'ok' : 'pending'
+        });
+        added++;
+      });
+      save(); renderStops();
+      return added;
+    },
+    stopCount: function () { return state.stops.length; },
+    showTab: showTab,
+    toast: toast
+  };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261031b">
+<link rel="stylesheet" href="styles.css?v=20261031d">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -188,6 +188,124 @@
       </div>
     </section>
 
+    <!-- ========== TAB: FIND ========== -->
+    <section id="tab-find" class="hide">
+
+      <div class="card">
+        <h2>Find accounts</h2>
+        <p class="hint">Pick a spot, draw a radius, then narrow it down. Chains are left out &mdash; they buy at corporate.</p>
+
+        <label for="findAnchor">Search around</label>
+        <input id="findAnchor" placeholder="Address, city, ZIP, or county" autocomplete="off">
+        <div class="row wrap" style="margin-top:8px">
+          <button class="icon-btn sm ghost" id="btnFindLocate">Use my current location</button>
+          <button class="icon-btn sm primary" id="btnFindSearch">Search</button>
+        </div>
+
+        <div class="grid-3" style="margin-top:14px">
+          <div>
+            <label for="findRadius">Within</label>
+            <select id="findRadius">
+              <option value="2">2 miles</option>
+              <option value="5" selected>5 miles</option>
+              <option value="10">10 miles</option>
+              <option value="25">25 miles</option>
+            </select>
+          </div>
+          <div>
+            <label for="findTier">Minimum licence on staff</label>
+            <select id="findTier">
+              <option value="">Any &mdash; including unverified</option>
+              <option value="1">Esthetician or above</option>
+              <option value="2">RN or above</option>
+              <option value="3">NP / PA-C or above</option>
+              <option value="4">MD / DO only</option>
+            </select>
+          </div>
+          <div>
+            <label for="findDay">Day of the route</label>
+            <select id="findDay">
+              <option value="mon">Monday</option>
+              <option value="tue">Tuesday</option>
+              <option value="wed">Wednesday</option>
+              <option value="thu">Thursday</option>
+              <option value="fri">Friday</option>
+              <option value="sat">Saturday</option>
+              <option value="sun">Sunday</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label>Specialty</label>
+          <div class="chips" id="findSpecs">
+            <label class="chip"><input type="checkbox" value="Dermatology">Dermatology</label>
+            <label class="chip"><input type="checkbox" value="Med spa">Med spa</label>
+            <label class="chip"><input type="checkbox" value="Plastic surgery">Plastic surgery</label>
+            <label class="chip"><input type="checkbox" value="Facial plastics">Facial plastics</label>
+            <label class="chip"><input type="checkbox" value="Cosmetic surgery">Cosmetic surgery</label>
+            <label class="chip"><input type="checkbox" value="OB/GYN">OB/GYN</label>
+            <label class="chip"><input type="checkbox" value="Primary care">Primary care</label>
+            <label class="chip"><input type="checkbox" value="ENT">ENT</label>
+          </div>
+        </div>
+
+        <div class="check" style="margin-top:10px">
+          <input type="checkbox" id="findChains" checked>
+          <label for="findChains">Leave out national chains</label>
+        </div>
+        <div class="check">
+          <input type="checkbox" id="findOpen">
+          <label for="findOpen">Only accounts verified open that day</label>
+        </div>
+
+        <p class="note" id="findMsg" style="margin-top:12px"></p>
+      </div>
+
+      <div class="card">
+        <div class="row wrap" style="justify-content:space-between">
+          <h2 style="margin:0" id="findCount">Results</h2>
+          <div class="row wrap">
+            <button class="icon-btn sm ghost" id="btnFindAll">Select all / none</button>
+            <button class="icon-btn sm primary" id="btnFindAdd">Add to route</button>
+          </div>
+        </div>
+
+        <div id="findEmpty" class="empty" style="margin-top:12px">
+          <div class="big">&#128269;</div>
+          <div>Set a starting point and search.</div>
+        </div>
+
+        <div id="findResults" class="table-wrap hide" style="margin-top:12px">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:36px"></th>
+                <th style="width:58px">Mi</th>
+                <th>Account</th>
+                <th>Address</th>
+                <th style="width:130px">Specialty</th>
+                <th style="width:104px">Licence</th>
+                <th style="width:120px">Phone</th>
+              </tr>
+            </thead>
+            <tbody id="findBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Load brand lists</h2>
+        <p class="hint">
+          One-time import of a brand account file. Names, addresses, phones and
+          coordinates come across; specialty is guessed from the business name and
+          can be corrected. Nothing here counts as a verified clinician.
+        </p>
+        <button class="icon-btn sm" id="btnBrandBrowse">Choose a brand file</button>
+        <input type="file" id="brandFile" class="sr-only" accept=".json,application/json">
+      </div>
+    </section>
+
     <!-- ========== TAB: ROUTE ========== -->
     <section id="tab-route" class="hide">
       <div id="routeEmpty" class="empty">
@@ -291,6 +409,7 @@
   </main>
 
   <footer class="bottom-nav">
+    <button class="nav-btn" data-tab="find"><span class="ico">&#128269;</span>Find</button>
     <button class="nav-btn active" data-tab="stops"><span class="ico">&#128203;</span>Stops</button>
     <button class="nav-btn" data-tab="route"><span class="ico">&#128340;</span>Route</button>
     <button class="nav-btn" data-tab="map"><span class="ico">&#128506;</span>Map</button>
@@ -301,8 +420,9 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261031b"></script>
-<script src="auth.js?v=20261031b"></script>
-<script src="app.js?v=20261031b"></script>
+<script src="config.js?v=20261031d"></script>
+<script src="auth.js?v=20261031d"></script>
+<script src="app.js?v=20261031d"></script>
+<script src="search.js?v=20261031d"></script>
 </body>
 </html>
