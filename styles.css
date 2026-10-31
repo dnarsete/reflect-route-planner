@@ -244,3 +244,16 @@ body.gated { overflow: hidden; }
 .chip input { margin: 0; }
 .chip:has(input:checked) { border-color: var(--brand); color: var(--text); }
 td.muted { color: var(--muted); }
+
+/* ===================== paste-in sources ===================== */
+.src-slot { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.src-slot:first-child { border-top: 0; padding-top: 0; }
+.src-slot input { width: 100%; }
+.src-slot textarea {
+  width: 100%; margin-top: 6px; resize: vertical; min-height: 76px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--text); border-radius: 12px; padding: 10px 12px;
+  font: inherit; font-size: .88rem; line-height: 1.4;
+}
+tr.row-warn td { background: rgba(245, 158, 11, .08); }
+.warn-text { color: var(--warn); }

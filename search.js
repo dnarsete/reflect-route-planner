@@ -340,6 +340,16 @@
       if (el) el.addEventListener('change', function () { if (S.anchor) run(); });
     });
 
+      window.RP_FIND = {
+      all: function () { return S.all; },
+      reload: function () {
+        loadAll().then(function () {
+          note(S.all.length + ' accounts available to search.');
+          if (S.anchor) run(); else render();
+        });
+      }
+    };
+
     window.RP_AUTH.ready(function (user) {
       if (!user) return;
       loadAll().then(function () {

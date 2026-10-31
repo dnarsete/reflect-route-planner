@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261031d">
+<link rel="stylesheet" href="styles.css?v=20261031g">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -295,6 +295,63 @@
       </div>
 
       <div class="card">
+        <h2>Add accounts from websites</h2>
+        <p class="hint">
+          Run the same search on each site, paste what it returns, then cross-reference.
+          An account found on several sites is a stronger record; one where the sites
+          disagree is held back for you to look at.
+        </p>
+
+        <datalist id="srcSuggest">
+          <option value="BOTOX Cosmetic directory"></option>
+          <option value="Google"></option>
+          <option value="Google Maps"></option>
+          <option value="Yelp"></option>
+          <option value="AAD find-a-dermatologist"></option>
+          <option value="Healthgrades"></option>
+          <option value="Practice website"></option>
+        </datalist>
+
+        <div id="srcSlots"></div>
+
+        <div class="row wrap" style="margin-top:10px">
+          <button class="icon-btn sm ghost" id="btnSrcAdd">Add another source</button>
+          <span class="note" id="srcCount"></span>
+        </div>
+
+        <div class="row wrap" style="margin-top:12px">
+          <button class="icon-btn sm primary" id="btnPasteXref">Cross-reference</button>
+        </div>
+        <p class="note" id="pasteMsg" style="margin-top:10px"></p>
+
+        <div id="pasteReview" class="hide" style="margin-top:14px">
+          <div class="row wrap" style="justify-content:space-between">
+            <p class="note" id="pasteSummary" style="margin:0"></p>
+            <div class="row wrap">
+              <button class="icon-btn sm ghost" id="btnPasteAll">Select all / none</button>
+              <button class="icon-btn sm primary" id="btnPasteSave">Save to accounts</button>
+            </div>
+          </div>
+          <div class="table-wrap" style="margin-top:10px">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:36px"></th>
+                  <th>Account</th>
+                  <th>Address</th>
+                  <th style="width:110px">Phone</th>
+                  <th style="width:160px">Seen on</th>
+                  <th style="width:96px">Status</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody id="pasteBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Load brand lists</h2>
         <p class="hint">
           One-time import of a brand account file. Names, addresses, phones and
@@ -420,9 +477,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261031d"></script>
-<script src="auth.js?v=20261031d"></script>
-<script src="app.js?v=20261031d"></script>
-<script src="search.js?v=20261031d"></script>
+<script src="config.js?v=20261031g"></script>
+<script src="auth.js?v=20261031g"></script>
+<script src="app.js?v=20261031g"></script>
+<script src="search.js?v=20261031g"></script>
+<script src="paste.js?v=20261031g"></script>
 </body>
 </html>
