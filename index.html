@@ -9,6 +9,21 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div id="authGate" class="auth-gate hide">
+  <div class="auth-card">
+    <div class="brand-mark lg">R</div>
+    <h1>Route Planner</h1>
+    <p class="auth-sub">Sign in with your work email. We send a link &mdash; there is no password to remember.</p>
+    <form id="authForm">
+      <label for="authEmail">Email address</label>
+      <input id="authEmail" type="email" inputmode="email" autocomplete="email"
+             spellcheck="false" required placeholder="you@thereflectco.com">
+      <button class="icon-btn primary block" id="authBtn" type="submit">Email me a link</button>
+    </form>
+    <p class="auth-msg" id="authMsg"></p>
+  </div>
+</div>
+
 <div class="app">
 
   <header class="top">
@@ -20,7 +35,9 @@
       </div>
     </div>
     <div class="top-actions">
+      <span class="who" id="authWho"></span>
       <button class="icon-btn primary" id="btnPlan">Plan route</button>
+      <button class="icon-btn sm ghost" id="btnSignOut" title="Sign out">Sign out</button>
     </div>
   </header>
 
@@ -283,6 +300,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="auth.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
