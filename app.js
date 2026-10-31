@@ -1126,9 +1126,9 @@
     if (!s.roundTrip) pin(last.lat, last.lng, '&#9873;', 'anchor', '<b>End</b><br>' + esc(s.endAddr));
 
     if (r.geometry && r.geometry.length) {
-      L.polyline(r.geometry, { color: '#c25e2f', weight: 4, opacity: .85 }).addTo(layer);
+      L.polyline(r.geometry, { color: '#2fae6f', weight: 4, opacity: .85 }).addTo(layer);
     } else {
-      L.polyline(bounds, { color: '#c25e2f', weight: 3, opacity: .6, dashArray: '6,6' }).addTo(layer);
+      L.polyline(bounds, { color: '#2fae6f', weight: 3, opacity: .6, dashArray: '6,6' }).addTo(layer);
     }
 
     lastBounds = L.latLngBounds(bounds);
