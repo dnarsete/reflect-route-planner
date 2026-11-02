@@ -172,6 +172,108 @@ function fromHtml(doc: string) {
   }];
 }
 
+/* ---------------- Prollenium / Revanesse provider locator ----------------
+
+   Their locator answers a POST to WordPress's admin-ajax and nothing
+   else - no REST route, and a GET returns an empty result set. A browser
+   cannot post across origins to it, which is the whole reason this
+   function exists.
+
+   It wants a point, a radius and a bounding box, and hands back a block
+   of marker HTML carrying name, address, coordinates, website and phone
+   for every provider in range. */
+const PROLLENIUM_URL = "https://revanesse.com/wp-admin/admin-ajax.php";
+
+function stripTags(h: string) {
+  return h.replace(/<[^>]+>/g, "").replace(/&amp;/gi, "&").replace(/&nbsp;/gi, " ")
+          .replace(/\s+/g, " ").trim();
+}
+
+function parseProllenium(markersHtml: string) {
+  const rows: Record<string, unknown>[] = [];
+  const re = /data-lat="([-\d.]+)"\s+data-lng="([-\d.]+)"[\s\S]*?<h3>([\s\S]*?)<\/h3>\s*<p>([\s\S]*?)<\/p>/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(markersHtml)) !== null) {
+    const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+    const name = stripTags(m[3]);
+    const blob = m[4];
+
+    const site = (blob.match(/href="([^"]+)"/) || [])[1] || null;
+    const parts = blob.split(/<br\s*\/?>/i).map(stripTags).filter(Boolean);
+
+    let street = "", city = "", state = "", zip = "", phone = "";
+    for (const part of parts) {
+      if (/^(visit website)$/i.test(part)) continue;
+      const digits = part.replace(/\D/g, "");
+      if (!phone && digits.length === 10 && /^[\d\s().-]+$/.test(part)) { phone = digits; continue; }
+      /* they write the town with a full stop: "Denver.  CO 80211" */
+      const csz = part.match(/^(.*?)[.,]?\s+([A-Z]{2})\.?\s+(\d{5})/);
+      if (csz && !zip) { city = csz[1].trim(); state = csz[2]; zip = csz[3]; continue; }
+      if (!street) street = part.replace(/\s*\n\s*/g, " ").trim();
+    }
+
+    const sp = splitSuite(street);
+    rows.push({
+      name, street: sp.street || null, suite: sp.suite || null,
+      city: city || null, state: state || null, zip: zip || null,
+      phone: phone || null,
+      lat: isFinite(lat) ? lat : null, lng: isFinite(lng) ? lng : null,
+      website: site, hours: {}, via: "prollenium",
+    });
+  }
+  return rows;
+}
+
+async function grabProllenium(q: { lat: number; lng: number; radius: number }) {
+  const miles = Math.max(1, Math.min(100, q.radius || 25));
+  const dLat = miles / 69;
+  const dLng = miles / (69 * Math.max(0.2, Math.cos(q.lat * Math.PI / 180)));
+
+  const body = new URLSearchParams({
+    action: "updateCustomMap",
+    lat: String(q.lat),
+    lng: String(q.lng),
+    lat_lc: String(q.lat - dLat),
+    lat_uc: String(q.lat + dLat),
+    lng_lc: String(q.lng - dLng),
+    lng_uc: String(q.lng + dLng),
+    radius_desired: String(miles),
+    radius_meters: String(Math.round(miles * 1609.34)),
+    formatted: "",
+    cc: "US",
+    brand: "Revanesse",
+    unit: "mi",
+    country: "United States",
+  });
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(PROLLENIUM_URL, {
+      method: "POST",
+      signal: ctl.signal,
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://revanesse.com/find-a-provider/",
+      },
+      body: body.toString(),
+    });
+    if (!res.ok) return { url: "prollenium", ok: false, rows: [], error: `HTTP ${res.status}` };
+    const data = await res.json();
+    const rows = parseProllenium(String(data?.markers_html || ""));
+    return {
+      url: "prollenium", ok: true, rows,
+      error: rows.length ? undefined : "No Prollenium providers in that radius.",
+    };
+  } catch (e) {
+    return { url: "prollenium", ok: false, rows: [],
+             error: (e as Error).name === "AbortError" ? "timed out" : String(e) };
+  } finally { clearTimeout(timer); }
+}
+
 async function grab(url: string) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
@@ -206,12 +308,24 @@ serve(async (req) => {
   if (req.method !== "POST") return new Response(JSON.stringify({ error: "POST only" }), { status: 405, headers });
 
   let urls: string[] = [];
-  try { urls = ((await req.json())?.urls ?? []).filter((u: unknown) => typeof u === "string" && /^https?:\/\//i.test(u)); }
-  catch { return new Response(JSON.stringify({ error: "bad JSON" }), { status: 400, headers }); }
+  let prollenium: { lat: number; lng: number; radius: number } | null = null;
+  try {
+    const payload = await req.json();
+    urls = (payload?.urls ?? []).filter((u: unknown) => typeof u === "string" && /^https?:\/\//i.test(u));
+    const pr = payload?.prollenium;
+    if (pr && isFinite(Number(pr.lat)) && isFinite(Number(pr.lng))) {
+      prollenium = { lat: Number(pr.lat), lng: Number(pr.lng), radius: Number(pr.radius) || 25 };
+    }
+  } catch {
+    return new Response(JSON.stringify({ error: "bad JSON" }), { status: 400, headers });
+  }
 
-  if (!urls.length) return new Response(JSON.stringify({ error: "no urls" }), { status: 400, headers });
+  if (!urls.length && !prollenium) {
+    return new Response(JSON.stringify({ error: "no urls" }), { status: 400, headers });
+  }
 
   const results = [];
+  if (prollenium) results.push(await grabProllenium(prollenium));
   for (const u of urls.slice(0, MAX_URLS)) {
     results.push(await grab(u));
     await new Promise((r) => setTimeout(r, 400));   // be a polite visitor
