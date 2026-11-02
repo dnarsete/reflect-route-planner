@@ -1385,6 +1385,31 @@
       return added;
     },
     stopCount: function () { return state.stops.length; },
+
+    /* Lets Find build the day outright: it already knows where you are
+       starting from, so there is no reason to send you to another tab to
+       retype it. Writes the planner's own fields, then plans. */
+    planWith: function (o) {
+      o = o || {};
+      if (o.startAddr != null) $('startAddr').value = o.startAddr;
+      if (o.startTime) $('startTime').value = o.startTime;
+      $('roundTrip').checked = !!o.roundTrip;
+      $('endWrap').classList.toggle('hide', !!o.roundTrip);
+      if (o.endAddr != null) $('endAddr').value = o.endAddr;
+
+      /* formToSettings only copies the form fields, so coordinates set
+         here survive it - Find has already resolved the anchor and there
+         is no sense looking it up twice. */
+      formToSettings();
+      if (typeof o.startLat === 'number') {
+        state.settings.startLat = o.startLat;
+        state.settings.startLng = o.startLng;
+      } else {
+        state.settings.startLat = state.settings.startLng = null;
+      }
+      state.settings.endLat = state.settings.endLng = null;
+      planRoute();
+    },
     showTab: showTab,
     toast: toast
   };

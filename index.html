@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261101k">
+<link rel="stylesheet" href="styles.css?v=20261101m">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -201,6 +201,25 @@
         <div class="row wrap" style="margin-top:8px">
           <button class="icon-btn sm ghost" id="btnFindLocate">Use my current location</button>
         </div>
+        <p class="note" style="margin-top:6px">This is also where the route starts.</p>
+
+        <div class="grid-2" style="margin-top:12px">
+          <div>
+            <label for="findStartTime">Leave at</label>
+            <input id="findStartTime" type="time" value="09:00">
+          </div>
+          <div>
+            <label for="findEndMode">End the day</label>
+            <select id="findEndMode">
+              <option value="start" selected>Back where I started</option>
+              <option value="custom">Somewhere else</option>
+            </select>
+          </div>
+        </div>
+        <div id="findEndWrap" class="hide" style="margin-top:8px">
+          <label for="findEndAddr">Ending point</label>
+          <input id="findEndAddr" placeholder="Home, hotel, or the far side of the day" autocomplete="off">
+        </div>
 
         <div class="grid-3" style="margin-top:14px">
           <div>
@@ -288,15 +307,15 @@
           </div>
         </details>
 
-        <details class="adv" style="margin-top:10px">
-          <summary>Load a brand list file</summary>
-          <p class="hint" style="margin-top:8px">
-            One-time import of a brand account file. Names, addresses, phones and
-            coordinates come across; specialty is guessed from the business name.
+        <div class="src-file">
+          <label>Or upload an account file</label>
+          <p class="hint" style="margin:4px 0 8px">
+            A brand list in JSON. Names, addresses, phones and coordinates come across;
+            specialty is guessed from the business name.
           </p>
-          <button class="icon-btn sm" id="btnBrandBrowse" type="button">Choose a brand file</button>
+          <button class="icon-btn sm" id="btnBrandBrowse" type="button">Choose a file</button>
           <input type="file" id="brandFile" class="sr-only" accept=".json,application/json">
-        </details>
+        </div>
 
         <div class="row wrap" style="margin-top:16px">
           <button class="icon-btn primary" id="btnFindSearch">Find accounts</button>
@@ -310,7 +329,7 @@
           <h2 style="margin:0"><span class="step">3</span> <span id="findCount">Results</span></h2>
           <div class="row wrap">
             <button class="icon-btn sm ghost" id="btnFindAll">Select all / none</button>
-            <button class="icon-btn sm primary" id="btnFindAdd">Add to route</button>
+            <button class="icon-btn sm primary" id="btnFindAdd">Build the route</button>
           </div>
         </div>
 
@@ -453,10 +472,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261101k"></script>
-<script src="auth.js?v=20261101k"></script>
-<script src="app.js?v=20261101k"></script>
-<script src="search.js?v=20261101k"></script>
-<script src="paste.js?v=20261101k"></script>
+<script src="config.js?v=20261101m"></script>
+<script src="auth.js?v=20261101m"></script>
+<script src="app.js?v=20261101m"></script>
+<script src="search.js?v=20261101m"></script>
+<script src="paste.js?v=20261101m"></script>
 </body>
 </html>

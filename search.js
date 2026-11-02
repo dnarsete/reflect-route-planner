@@ -335,19 +335,30 @@
       (S.results.length === 1 ? ' account found' : ' accounts found');
   }
 
-  /* Ticked rows go to the planner. Anything found on a website is saved
-     to the account list on the way through, so the work is not lost. */
-  function addToRoute() {
+  /* Ticked rows become the day. Anything found on a website is saved to
+     the account list on the way through, so a site only has to be read
+     once - and then the route is planned outright, because step 1 already
+     knows where you are starting and when. */
+  function buildRoute() {
     var picked = [];
     Array.prototype.slice.call(document.querySelectorAll('#findBody input:checked'))
       .forEach(function (cb) { picked.push(S.results[parseInt(cb.getAttribute('data-idx'), 10)]); });
 
     if (!picked.length) { msg('Tick at least one account.', 'err'); return; }
 
+    var endMode = $('findEndMode').value;
+    var endAddr = clean($('findEndAddr').value);
+    if (endMode === 'custom' && !endAddr) {
+      msg('Type where the day should end, or switch back to "Back where I started".', 'err');
+      return;
+    }
+
     var fresh = picked.filter(function (r) { return r.isNew; });
     var user = me();
 
-    var step = (fresh.length && user && db())
+    msg(fresh.length ? 'Saving ' + fresh.length + ' new account' + (fresh.length === 1 ? '' : 's') + '…' : 'Building the route…');
+
+    var save = (fresh.length && user && db())
       ? db().from('candidates').insert(fresh.map(function (r) {
           return {
             owner_id: user.id, name: r.row.name,
@@ -357,24 +368,31 @@
             specialty: r.row.specialty || [],
             lat: (typeof r.row.lat === 'number') ? r.row.lat : null,
             lng: (typeof r.row.lng === 'number') ? r.row.lng : null,
+            geocode_quality: r.row.geocode_quality || null,
             source: r.sources.join(' + ')
           };
         }))
       : Promise.resolve();
 
-    step.then(function () {
-      var n = window.RP_APP.addStops(picked.map(function (r) {
-        return {
-          name: r.row.name, address: fullAddress(r.row), phone: r.row.phone || '',
-          lat: r.row.lat, lng: r.row.lng
-        };
-      }));
-      window.RP_APP.toast(n + ' stop' + (n === 1 ? '' : 's') + ' added. Set your start and end, then Plan route.', 'ok');
-      if (fresh.length) loadAll();
-      window.RP_APP.showTab('stops');
-    }).catch(function (e) {
-      msg('Could not save the new accounts: ' + ((e && e.message) || 'unknown error'), 'err');
-    });
+    save.catch(function () { /* a save failure must not cost you the route */ })
+      .then(function () {
+        window.RP_APP.addStops(picked.map(function (r) {
+          return {
+            name: r.row.name, address: fullAddress(r.row), phone: r.row.phone || '',
+            lat: r.row.lat, lng: r.row.lng
+          };
+        }));
+        if (fresh.length) loadAll();
+        msg('');
+        window.RP_APP.planWith({
+          startAddr: clean($('findAnchor').value) || 'Current location',
+          startLat: S.anchor ? S.anchor.lat : null,
+          startLng: S.anchor ? S.anchor.lng : null,
+          startTime: $('findStartTime').value || '09:00',
+          roundTrip: endMode === 'start',
+          endAddr: endMode === 'custom' ? endAddr : ''
+        });
+      });
   }
 
   /* ---------------- wiring ---------------- */
@@ -384,7 +402,11 @@
 
     $('btnFindLocate').addEventListener('click', useMyLocation);
     $('btnFindSearch').addEventListener('click', runSearch);
-    $('btnFindAdd').addEventListener('click', addToRoute);
+    $('btnFindAdd').addEventListener('click', buildRoute);
+
+    $('findEndMode').addEventListener('change', function () {
+      $('findEndWrap').classList.toggle('hide', this.value !== 'custom');
+    });
 
     $('btnFindAll').addEventListener('click', function () {
       var boxes = document.querySelectorAll('#findBody input[type=checkbox]');
