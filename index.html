@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261102f">
+<link rel="stylesheet" href="styles.css?v=20261102h">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -78,15 +78,15 @@
         <div class="grid-3">
           <div>
             <label for="visitMin">Default time per stop (min)</label>
-            <input id="visitMin" type="number" min="5" max="480" step="5" value="30">
+            <input id="visitMin" type="number" min="5" max="480" step="5" value="20">
           </div>
           <div>
             <label for="bufMin">Minimum buffer (min)</label>
-            <input id="bufMin" type="number" min="0" max="180" step="5" value="15">
+            <input id="bufMin" type="number" min="0" max="180" step="5" value="0">
           </div>
           <div>
             <label for="bufMax">Maximum buffer (min)</label>
-            <input id="bufMax" type="number" min="0" max="240" step="5" value="60">
+            <input id="bufMax" type="number" min="0" max="240" step="5" value="30">
           </div>
         </div>
         <details class="adv">
@@ -203,10 +203,14 @@
         </div>
         <p class="note" style="margin-top:6px">This is also where the route starts.</p>
 
-        <div class="grid-2" style="margin-top:12px">
+        <div class="grid-3" style="margin-top:12px">
           <div>
             <label for="findStartTime">Leave at</label>
             <input id="findStartTime" type="time" value="09:00">
+          </div>
+          <div>
+            <label for="findMaxStops">Calls in the day</label>
+            <input id="findMaxStops" type="number" min="1" max="30" step="1" value="15">
           </div>
           <div>
             <label for="findEndMode">End the day</label>
@@ -479,10 +483,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261102f"></script>
-<script src="auth.js?v=20261102f"></script>
-<script src="app.js?v=20261102f"></script>
-<script src="search.js?v=20261102f"></script>
-<script src="paste.js?v=20261102f"></script>
+<script src="config.js?v=20261102h"></script>
+<script src="auth.js?v=20261102h"></script>
+<script src="app.js?v=20261102h"></script>
+<script src="search.js?v=20261102h"></script>
+<script src="paste.js?v=20261102h"></script>
 </body>
 </html>

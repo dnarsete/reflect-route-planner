@@ -401,7 +401,9 @@
       render();
 
       var nNew = out.filter(function (x) { return x.isNew; }).length;
+      var dayCap = parseInt($('findMaxStops').value, 10) || 15;
       var parts = [out.length + (out.length === 1 ? ' account' : ' accounts')];
+      if (out.length > dayCap) parts.push('a route takes the ' + dayCap + ' closest');
       if (nNew) parts.push(nNew + ' new from websites');
       if (notes.length) parts.push(notes.join(' · '));
         msg(parts.join(' — '), notes.length ? 'warn' : 'ok');
@@ -495,10 +497,21 @@
       return;
     }
 
+    /* A search can turn up a hundred accounts; a day holds about fifteen.
+       Results are sorted by distance, so keeping the first N keeps the
+       tight cluster these routes are built on rather than a sprawl. */
+    var cap = parseInt($('findMaxStops').value, 10) || 15;
+    var trimmed = 0;
+    if (picked.length > cap) {
+      trimmed = picked.length - cap;
+      picked = picked.slice(0, cap);
+    }
+
     var fresh = picked.filter(function (r) { return r.isNew; });
     var user = me();
 
-    msg(fresh.length ? 'Saving ' + fresh.length + ' new account' + (fresh.length === 1 ? '' : 's') + '…' : 'Building the route…');
+    msg((trimmed ? 'Taking the ' + cap + ' closest — ' + trimmed + ' further out left off. ' : '') +
+        (fresh.length ? 'Saving ' + fresh.length + ' new account' + (fresh.length === 1 ? '' : 's') + '…' : 'Building the route…'));
 
     var save = (fresh.length && user && db())
       ? db().from('candidates').insert(fresh.map(function (r) {
@@ -518,7 +531,7 @@
 
     save.catch(function () { /* a save failure must not cost you the route */ })
       .then(function () {
-        window.RP_APP.addStops(picked.map(function (r) {
+        window.RP_APP.setStops(picked.map(function (r) {
           return {
             name: r.row.name, address: fullAddress(r.row), phone: r.row.phone || '',
             lat: r.row.lat, lng: r.row.lng

@@ -57,7 +57,7 @@
       startAddr: '', startLat: null, startLng: null,
       endAddr: '', endLat: null, endLng: null,
       roundTrip: true, startTime: '08:00', dayEnd: '',
-      visitMin: 30, bufMin: 15, bufMax: 60, lunchMin: 0,
+      visitMin: 20, bufMin: 0, bufMax: 30, lunchMin: 0,
       lockOrder: false, gKey: ''
     },
     stops: [],
@@ -866,7 +866,10 @@
         var stops = state.stops.filter(function (x) { return x.geo === 'ok' && x.lat != null; });
         if (!stops.length) throw new Error('None of the addresses could be located.');
         if (s.startLat == null) throw new Error("Your starting address couldn't be located.");
-        if (stops.length > 60) throw new Error('That is ' + stops.length + ' stops - trim the list to 60 or fewer.');
+        if (stops.length > 30) {
+          throw new Error('That is ' + stops.length + ' stops. A sales day holds about fifteen - ' +
+                          'use Find to take the closest ones, or clear some here.');
+        }
 
         var endPt = s.roundTrip
           ? { lat: s.startLat, lng: s.startLng, label: s.startAddr }
@@ -1385,6 +1388,13 @@
       return added;
     },
     stopCount: function () { return state.stops.length; },
+
+    /* Find builds a day, so it replaces the list rather than adding to
+       it - otherwise yesterday's stops ride along and the count drifts. */
+    setStops: function (rows) {
+      state.stops = [];
+      return this.addStops(rows);
+    },
 
     /* Lets Find build the day outright: it already knows where you are
        starting from, so there is no reason to send you to another tab to
