@@ -263,3 +263,14 @@ tr.row-warn td { background: rgba(245, 158, 11, .08); }
   width: 100%; min-width: 150px; padding: 5px 8px;
   font-size: .85rem; border-radius: 8px;
 }
+
+/* ===================== find: numbered steps ===================== */
+h2 .step {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin-right: 8px;
+  border-radius: 50%; background: var(--brand); color: #09231a;
+  font-size: .78rem; font-weight: 700; vertical-align: 2px;
+}
+details.adv > summary { cursor: pointer; padding: 6px 0; }
+details.adv > summary .note { margin-left: 6px; }
+tr.row-new td { background: rgba(47,174,111,.07); }

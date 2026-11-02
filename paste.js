@@ -21,7 +21,26 @@
   /* ---------------- parsing ---------------- */
 
   var STREET = /\b(ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|way|pkwy|parkway|ln|lane|ct|court|cir|circle|pl|place|ter|trail|hwy|highway)\b\.?/i;
-  var CSZ    = /([A-Za-z .'\-]+),\s*([A-Z]{2})\.?\s+(\d{5})(?:-\d{4})?/;
+  /* Sites write the state either way - "Lakewood, CO 80227" and
+     "Lakewood, Colorado 80227" both turn up, sometimes on one site. */
+  var STATES = {
+    alabama:'AL',alaska:'AK',arizona:'AZ',arkansas:'AR',california:'CA',colorado:'CO',
+    connecticut:'CT',delaware:'DE',florida:'FL',georgia:'GA',hawaii:'HI',idaho:'ID',
+    illinois:'IL',indiana:'IN',iowa:'IA',kansas:'KS',kentucky:'KY',louisiana:'LA',
+    maine:'ME',maryland:'MD',massachusetts:'MA',michigan:'MI',minnesota:'MN',
+    mississippi:'MS',missouri:'MO',montana:'MT',nebraska:'NE',nevada:'NV',
+    'new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY',
+    'north carolina':'NC','north dakota':'ND',ohio:'OH',oklahoma:'OK',oregon:'OR',
+    pennsylvania:'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD',
+    tennessee:'TN',texas:'TX',utah:'UT',vermont:'VT',virginia:'VA',washington:'WA',
+    'west virginia':'WV',wisconsin:'WI',wyoming:'WY','district of columbia':'DC'
+  };
+  function stateCode(v) {
+    var t = clean(v);
+    if (/^[A-Za-z]{2}$/.test(t)) return t.toUpperCase();
+    return STATES[t.toLowerCase()] || '';
+  }
+  var CSZ    = /([A-Za-z .'\-]+),\s*([A-Za-z]{2}|[A-Za-z]{4,20}(?:\s[A-Za-z]+)?)\.?\s+(\d{5})(?:-\d{4})?/;
   var PHONE  = /\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-](\d{4})/;
   var SUITE  = /\b(?:ste|suite|unit|apt|bldg|building|fl|floor|rm|room)\b\.?\s*#?\s*([A-Za-z0-9\-]+)|#\s*([A-Za-z0-9\-]+)/i;
 
@@ -64,7 +83,7 @@
      parsing as street "1035", city "S Gaylord St Denver". */
   var SUFFIX = /\b(ave|avenue|st|street|rd|road|blvd|boulevard|dr|drive|way|pkwy|parkway|ln|lane|ct|court|cir|circle|pl|place|ter|terrace|trail|hwy|highway)\b\.?/ig;
   var PHONE_G = /\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]\d{4}/g;
-  var STZIP = /\b([A-Z]{2})\.?\s+(\d{5})(?:-\d{4})?\b/;
+  var STZIP = /\b([A-Z]{2}|[A-Za-z]{4,20})\.?\s+(\d{5})(?:-\d{4})?\b/;
 
   function splitStreetCity(head) {
     SUFFIX.lastIndex = 0;
@@ -101,12 +120,12 @@
       var state = '', zip = '', city = '';
       var m = raw.match(STZIP);
       if (m) {
-        state = m[1]; zip = m[2];
+        state = stateCode(m[1]); zip = m[2];
         raw = clean(raw.slice(0, m.index).replace(/[,]\s*$/, ''));
       } else {
         for (j = i + 1; j <= i + 3 && j < lines.length; j++) {
           var m2 = lines[j].match(CSZ);
-          if (m2) { city = clean(m2[1]); state = m2[2]; zip = m2[3]; break; }
+          if (m2) { city = clean(m2[1]); state = stateCode(m2[2]); zip = m2[3]; break; }
         }
       }
 
@@ -277,148 +296,6 @@
     return merged;
   }
 
-  /* ---------------- review + save ---------------- */
-
-  function row(el, cells, cls) {
-    var tr = document.createElement('tr');
-    if (cls) tr.className = cls;
-    cells.forEach(function (c) {
-      var td = document.createElement('td');
-      if (c && c.nodeType) td.appendChild(c); else td.textContent = c == null ? '' : String(c);
-      tr.appendChild(td);
-    });
-    el.appendChild(tr);
-    return tr;
-  }
-
-  function renderReview(merged) {
-    var body = $('pasteBody');
-    body.textContent = '';
-
-    var nNew = 0, nKnown = 0, nConf = 0;
-
-    merged.forEach(function (m, idx) {
-      var cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = !m.match;                /* default: add the new ones */
-      cb.setAttribute('data-idx', String(idx));
-
-      var status = m.match ? 'already saved' : 'new';
-      if (m.match) nKnown++; else nNew++;
-      if (m.conflicts.length) nConf++;
-
-      var addr = [[m.row.street, m.row.suite && ('Ste ' + m.row.suite)].filter(Boolean).join(' '),
-                  m.row.city, m.row.state, m.row.zip].filter(Boolean).join(', ');
-
-      var noteBits = [];
-      if (m.conflicts.length) {
-        noteBits.push(m.conflicts.map(function (c) {
-          return c.field + ': "' + c.a + '" vs "' + c.b + '"';
-        }).join('; '));
-      }
-      if (m.flagged) noteBits.push(m.flagged);
-
-      var noteCell = document.createElement('span');
-      noteCell.textContent = noteBits.join(' — ');
-      if (noteBits.length) noteCell.className = 'warn-text';
-
-      /* Names are read off rendered pages, so some arrive wrong. This is
-         the review step - let them be corrected here rather than after. */
-      var nameIn = document.createElement('input');
-      nameIn.className = 'name-edit';
-      nameIn.value = m.row.name || '';
-      nameIn.addEventListener('change', function () { m.row.name = clean(nameIn.value); });
-
-      row(body, [cb, nameIn, addr, m.row.phone, m.sources.length + '× ' + m.sources.join(', '),
-                 status, noteCell],
-          m.conflicts.length ? 'row-warn' : '');
-    });
-
-    $('pasteSummary').textContent =
-      merged.length + ' unique accounts — ' + nNew + ' new, ' + nKnown + ' already saved' +
-      (nConf ? ', ' + nConf + ' with conflicting details' : '');
-    $('pasteReview').classList.remove('hide');
-  }
-
-  function save() {
-    var user = window.RP_AUTH && window.RP_AUTH.user;
-    var db = window.RP_DB;
-    if (!user || !db) { msg('Sign in first.', 'err'); return; }
-    if (!P.review) return;
-
-    var picked = [];
-    Array.prototype.slice.call(document.querySelectorAll('#pasteBody input:checked'))
-      .forEach(function (cb) { picked.push(P.review[parseInt(cb.getAttribute('data-idx'), 10)]); });
-
-    if (!picked.length) { msg('Nothing ticked.', 'err'); return; }
-
-    var toInsert = picked.filter(function (m) { return !m.match; }).map(function (m) {
-      return {
-        owner_id: user.id,
-        name: m.row.name,
-        street: m.row.street || null,
-        suite: m.row.suite || null,
-        city: m.row.city || null,
-        state: m.row.state || null,
-        zip: m.row.zip || null,
-        phone: m.row.phone || null,
-        source: m.sources.join(' + ')
-      };
-    });
-
-    msg('Saving ' + picked.length + ' accounts…');
-
-    var step = toInsert.length
-      ? db.from('candidates').insert(toInsert).select('id,name,zip')
-      : Promise.resolve({ data: [] });
-
-    step.then(function (res) {
-      if (res.error) throw res.error;
-      var made = res.data || [];
-      var links = [], confs = [];
-
-      picked.forEach(function (m) {
-        var id = m.match ? m.match.id : (function () {
-          var hit = made.filter(function (x) { return x.name === m.row.name; })[0];
-          return hit ? hit.id : null;
-        })();
-        if (!id) return;
-        m.sources.forEach(function (s) {
-          links.push({
-            owner_id: user.id, candidate_id: id, source_name: s,
-            raw_name: m.row.name,
-            raw_address: [m.row.street, m.row.suite, m.row.city, m.row.state, m.row.zip].filter(Boolean).join(' '),
-            raw_phone: m.row.phone || null
-          });
-        });
-        m.conflicts.forEach(function (c) {
-          confs.push({
-            owner_id: user.id, candidate_id: id, field: c.field,
-            value_a: c.a, source_a: c.sourceA || null,
-            value_b: c.b, source_b: c.sourceB || null
-          });
-        });
-      });
-
-      return db.from('candidate_sources').upsert(links, { onConflict: 'candidate_id,source_name' })
-        .then(function () { return confs.length ? db.from('conflicts').insert(confs) : null; });
-    }).then(function () {
-      msg('Saved. ' + toInsert.length + ' new, ' +
-          (picked.length - toInsert.length) + ' updated with a new source.', 'ok');
-      $('pasteReview').classList.add('hide');
-      if (window.RP_FIND && window.RP_FIND.reload) window.RP_FIND.reload();
-    }).catch(function (e) {
-      msg('Save failed: ' + ((e && e.message) || 'unknown error'), 'err');
-    });
-  }
-
-  function msg(t, k) {
-    var el = $('pasteMsg');
-    if (!el) return;
-    el.textContent = t || '';
-    el.className = 'note' + (k ? ' ' + k : '');
-  }
-
   /* ---------------- slots ---------------- */
 
   function addSlot(presetName) {
@@ -514,74 +391,143 @@
            t.length > 70 || t.indexOf('](') >= 0;
   }
 
-  /* ---------------- wiring ---------------- */
+  /* ---------------- brand-list loader ---------------- */
+
+  function msg(t, k) {
+    var el = $('findMsg');
+    if (!el) return;
+    el.textContent = t || '';
+    el.className = 'note' + (k ? ' ' + k : '');
+  }
+
+  /* Specialty is inferred from the business name as a starting point. It
+     stays editable, and nothing here claims a clinician was verified. */
+  function inferSpecialty(name) {
+    var n = (name || '').toLowerCase(), out = [];
+    if (/derm/.test(n)) out.push('Dermatology');
+    if (/plastic surg/.test(n)) out.push('Plastic surgery');
+    if (/facial plastic|facial aesthet/.test(n)) out.push('Facial plastics');
+    if (/cosmetic surg/.test(n)) out.push('Cosmetic surgery');
+    if (/ob.?gyn|midwif|women/.test(n)) out.push('OB/GYN');
+    if (/dental|dentist/.test(n)) out.push('Dentistry');
+    if (/\bent\b|sinus/.test(n)) out.push('ENT');
+    if (!out.length && /med ?spa|medspa|aesthet|skin|laser|beauty|glow|rejuven/.test(n)) out.push('Med spa');
+    return out;
+  }
+
+  function importBrandFile(file) {
+    var user = window.RP_AUTH && window.RP_AUTH.user;
+    var db = window.RP_DB;
+    if (!user || !db) { msg('Sign in first.', 'err'); return; }
+
+    var fr = new FileReader();
+    fr.onload = function () {
+      var rows;
+      try { rows = JSON.parse(fr.result); } catch (e) { msg('That file is not valid JSON.', 'err'); return; }
+      if (!Array.isArray(rows)) { msg('Expected a list of accounts.', 'err'); return; }
+
+      var known = {};
+      ((window.RP_FIND && window.RP_FIND.all()) || []).forEach(function (c) {
+        known[(c.name || '').toLowerCase() + '|' + (c.zip || '')] = true;
+      });
+
+      var batch = [];
+      rows.forEach(function (r) {
+        var name = r.Name || r.name;
+        if (!name) return;
+        var zip = String(r.Zip || r.zip || '').slice(0, 5);
+        var k = name.toLowerCase() + '|' + zip;
+        if (known[k]) return;
+        known[k] = true;
+
+        var la = parseFloat(r.lat), ln = parseFloat(r.lng);
+        batch.push({
+          owner_id: user.id,
+          name: name,
+          street: r.Address || r.address || null,
+          city: r.City || r.city || null,
+          state: r.State || r.state || null,
+          zip: zip || null,
+          phone: (r.Phone || r.phone || '').trim() || null,
+          website: r.Website || r.website || null,
+          source: (r.Brand || r.brand || 'Brand list') + ' list',
+          specialty: inferSpecialty(name),
+          lat: isFinite(la) ? la : null,
+          lng: isFinite(ln) ? ln : null,
+          geocode_quality: isFinite(la) ? 'from_list' : null
+        });
+      });
+
+      if (!batch.length) { msg('Nothing new in that file - all of it is already loaded.', 'ok'); return; }
+
+      msg('Loading ' + batch.length + ' accounts…');
+      var chunks = [], i;
+      for (i = 0; i < batch.length; i += 100) chunks.push(batch.slice(i, i + 100));
+
+      chunks.reduce(function (pr, chunk) {
+        return pr.then(function () { return db.from('candidates').insert(chunk); });
+      }, Promise.resolve())
+        .then(function () {
+          msg('Loaded ' + batch.length + ' accounts.', 'ok');
+          if (window.RP_FIND && window.RP_FIND.reload) window.RP_FIND.reload();
+        })
+        .catch(function (e) {
+          msg('Load failed: ' + ((e && e.message) || 'unknown error'), 'err');
+        });
+    };
+    fr.readAsText(file);
+  }
+
+  /* ---------------- exports ---------------- */
+
+  /* Fetch every listed site, a few at a time. Different hosts, so there
+     is no reason to queue them; four lanes keeps it quick without
+     leaning on the reader. */
+  function fetchAll(jobs, onProgress) {
+    var sets = [], notes = [], done = 0;
+    var queue = jobs.slice();
+
+    function worker() {
+      var job = queue.shift();
+      if (!job) return Promise.resolve();
+      return fetchPage(job.url).then(function (text) {
+        var rows = fromPage(text, job.source);
+        if (rows.length) sets.push({ source: job.source, rows: rows });
+        else notes.push(job.source + ': nothing readable (the page builds its list with script)');
+      }).catch(function (e) {
+        notes.push(job.source + ': ' + ((e && e.message) || 'could not be read'));
+      }).then(function () {
+        done++;
+        if (onProgress) onProgress(done, jobs.length);
+        return worker();
+      });
+    }
+
+    var lanes = [];
+    for (var L = 0; L < Math.min(4, jobs.length); L++) lanes.push(worker());
+    return Promise.all(lanes).then(function () { return { sets: sets, notes: notes }; });
+  }
 
   function boot() {
     if (!$('srcSlots')) return;
-
     addSlot('BOTOX Cosmetic directory');
-    addSlot('Google');
-
     $('btnSrcAdd').addEventListener('click', function () { addSlot(); });
-
-    $('btnPasteXref').addEventListener('click', function () {
-      var jobs = gather();
-      if (!jobs.length) { msg('Paste at least one web address first.', 'err'); return; }
-
-      var btn = $('btnPasteXref');
-      btn.disabled = true;
-      var sets = [], done = 0, notes = [];
-
-      msg('Reading ' + jobs.length + ' site' + (jobs.length === 1 ? '' : 's') + '…');
-
-      /* Different hosts, so there is no reason to queue them behind each
-         other - that turned ten sites into ten round trips. Run a few at
-         a time instead: fast, but not a thundering herd at the reader. */
-      var LANES = 4;
-      var queue = jobs.slice();
-
-      function worker() {
-        var job = queue.shift();
-        if (!job) return Promise.resolve();
-        return fetchPage(job.url).then(function (text) {
-          var rows = fromPage(text, job.source);
-          if (rows.length) sets.push({ source: job.source, rows: rows });
-          else notes.push(job.source + ': nothing readable (the page may build its list with script)');
-        }).catch(function (e) {
-          notes.push(job.source + ': ' + ((e && e.message) || 'could not be read'));
-        }).then(function () {
-          done++;
-          msg('Read ' + done + ' of ' + jobs.length + '…');
-          return worker();
-        });
-      }
-
-      var lanes = [];
-      for (var L = 0; L < Math.min(LANES, jobs.length); L++) lanes.push(worker());
-
-      Promise.all(lanes).then(function () {
-        btn.disabled = false;
-        if (!sets.length) { msg(notes.join(' · ') || 'Nothing could be read from those addresses.', 'err'); return; }
-
-        var total = sets.reduce(function (n, x) { return n + x.rows.length; }, 0);
-        var existing = (window.RP_FIND && window.RP_FIND.all()) || [];
-        P.review = crossReference(sets, existing);
-        renderReview(P.review);
-        msg('Read ' + total + ' account' + (total === 1 ? '' : 's') + ' from ' +
-            sets.length + ' of ' + jobs.length + ' sites.' +
-            (notes.length ? ' ' + notes.join(' · ') : ''), notes.length ? 'warn' : 'ok');
-      });
-    });
-
-    $('btnPasteSave').addEventListener('click', save);
-    $('btnPasteAll').addEventListener('click', function () {
-      var boxes = document.querySelectorAll('#pasteBody input[type=checkbox]');
-      var anyOff = Array.prototype.slice.call(boxes).some(function (b) { return !b.checked; });
-      Array.prototype.slice.call(boxes).forEach(function (b) { b.checked = anyOff; });
+    $('btnBrandBrowse').addEventListener('click', function () { $('brandFile').click(); });
+    $('brandFile').addEventListener('change', function (e) {
+      var f = e.target.files && e.target.files[0];
+      if (f) importBrandFile(f);
+      e.target.value = '';
     });
   }
 
-  window.RP_PASTE = { parse: parse, crossReference: crossReference, looksPerson: looksPerson };
+  window.RP_SITES = {
+    gather: gather,
+    fetchAll: fetchAll,
+    crossReference: crossReference,
+    parse: parse,
+    looksPerson: looksPerson,
+    clean: clean
+  };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();

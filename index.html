@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261101f">
+<link rel="stylesheet" href="styles.css?v=20261101k">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -191,15 +191,15 @@
     <!-- ========== TAB: FIND ========== -->
     <section id="tab-find" class="hide">
 
+      <!-- ---------- 1. what you are looking for ---------- -->
       <div class="card">
-        <h2>Find accounts</h2>
-        <p class="hint">Pick a spot, draw a radius, then narrow it down. Chains are left out &mdash; they buy at corporate.</p>
+        <h2><span class="step">1</span> What you&rsquo;re looking for</h2>
+        <p class="hint">These settings drive everything below &mdash; your saved accounts and any websites you add.</p>
 
         <label for="findAnchor">Search around</label>
         <input id="findAnchor" placeholder="Address, city, ZIP, or county" autocomplete="off">
         <div class="row wrap" style="margin-top:8px">
           <button class="icon-btn sm ghost" id="btnFindLocate">Use my current location</button>
-          <button class="icon-btn sm primary" id="btnFindSearch">Search</button>
         </div>
 
         <div class="grid-3" style="margin-top:14px">
@@ -258,13 +258,56 @@
           <input type="checkbox" id="findOpen">
           <label for="findOpen">Only accounts verified open that day</label>
         </div>
-
-        <p class="note" id="findMsg" style="margin-top:12px"></p>
       </div>
 
+      <!-- ---------- 2. where to look ---------- -->
+      <div class="card">
+        <h2><span class="step">2</span> Where to look</h2>
+
+        <div class="check">
+          <input type="checkbox" id="useSaved" checked>
+          <label for="useSaved">My saved accounts <span class="note" id="savedCount"></span></label>
+        </div>
+
+        <details class="adv" id="siteWrap" style="margin-top:12px" open>
+          <summary>Also search these websites <span class="note" id="srcCount"></span></summary>
+          <p class="hint" style="margin-top:8px">
+            Paste a page address and the app reads it for accounts. Provider pages and
+            practice sites read well; a directory&rsquo;s own search results usually
+            don&rsquo;t, because they build the list with script after loading.
+          </p>
+          <datalist id="srcSuggest">
+            <option value="BOTOX Cosmetic directory"></option>
+            <option value="Google"></option>
+            <option value="Yelp"></option>
+            <option value="Practice website"></option>
+          </datalist>
+          <div id="srcSlots"></div>
+          <div class="row wrap" style="margin-top:10px">
+            <button class="icon-btn sm ghost" id="btnSrcAdd" type="button">Add another site</button>
+          </div>
+        </details>
+
+        <details class="adv" style="margin-top:10px">
+          <summary>Load a brand list file</summary>
+          <p class="hint" style="margin-top:8px">
+            One-time import of a brand account file. Names, addresses, phones and
+            coordinates come across; specialty is guessed from the business name.
+          </p>
+          <button class="icon-btn sm" id="btnBrandBrowse" type="button">Choose a brand file</button>
+          <input type="file" id="brandFile" class="sr-only" accept=".json,application/json">
+        </details>
+
+        <div class="row wrap" style="margin-top:16px">
+          <button class="icon-btn primary" id="btnFindSearch">Find accounts</button>
+        </div>
+        <p class="note" id="findMsg" style="margin-top:10px"></p>
+      </div>
+
+      <!-- ---------- 3. results ---------- -->
       <div class="card">
         <div class="row wrap" style="justify-content:space-between">
-          <h2 style="margin:0" id="findCount">Results</h2>
+          <h2 style="margin:0"><span class="step">3</span> <span id="findCount">Results</span></h2>
           <div class="row wrap">
             <button class="icon-btn sm ghost" id="btnFindAll">Select all / none</button>
             <button class="icon-btn sm primary" id="btnFindAdd">Add to route</button>
@@ -273,7 +316,7 @@
 
         <div id="findEmpty" class="empty" style="margin-top:12px">
           <div class="big">&#128269;</div>
-          <div>Set a starting point and search.</div>
+          <div>Set where you&rsquo;re looking, then press Find accounts.</div>
         </div>
 
         <div id="findResults" class="table-wrap hide" style="margin-top:12px">
@@ -281,87 +324,18 @@
             <thead>
               <tr>
                 <th style="width:36px"></th>
-                <th style="width:58px">Mi</th>
+                <th style="width:52px">Mi</th>
                 <th>Account</th>
                 <th>Address</th>
-                <th style="width:130px">Specialty</th>
-                <th style="width:104px">Licence</th>
-                <th style="width:120px">Phone</th>
+                <th style="width:112px">Licence</th>
+                <th style="width:118px">Phone</th>
+                <th style="width:150px">Source</th>
+                <th>Notes</th>
               </tr>
             </thead>
             <tbody id="findBody"></tbody>
           </table>
         </div>
-      </div>
-
-      <div class="card">
-        <h2>Pull accounts from websites</h2>
-        <p class="hint">
-          Paste up to ten web addresses and the app reads each one for accounts.
-          An account found on several sites is a stronger record; one where the sites
-          disagree is held back for you to look at. Pages that build their list with
-          script &mdash; the BOTOX directory&rsquo;s own search results, for one &mdash;
-          cannot be read this way, but individual provider pages can.
-        </p>
-
-        <datalist id="srcSuggest">
-          <option value="BOTOX Cosmetic directory"></option>
-          <option value="Google"></option>
-          <option value="Google Maps"></option>
-          <option value="Yelp"></option>
-          <option value="AAD find-a-dermatologist"></option>
-          <option value="Healthgrades"></option>
-          <option value="Practice website"></option>
-        </datalist>
-
-        <div id="srcSlots"></div>
-
-        <div class="row wrap" style="margin-top:10px">
-          <button class="icon-btn sm ghost" id="btnSrcAdd">Add another site</button>
-          <span class="note" id="srcCount"></span>
-        </div>
-
-        <div class="row wrap" style="margin-top:12px">
-          <button class="icon-btn sm primary" id="btnPasteXref">Fetch &amp; cross-reference</button>
-        </div>
-        <p class="note" id="pasteMsg" style="margin-top:10px"></p>
-
-        <div id="pasteReview" class="hide" style="margin-top:14px">
-          <div class="row wrap" style="justify-content:space-between">
-            <p class="note" id="pasteSummary" style="margin:0"></p>
-            <div class="row wrap">
-              <button class="icon-btn sm ghost" id="btnPasteAll">Select all / none</button>
-              <button class="icon-btn sm primary" id="btnPasteSave">Save to accounts</button>
-            </div>
-          </div>
-          <div class="table-wrap" style="margin-top:10px">
-            <table>
-              <thead>
-                <tr>
-                  <th style="width:36px"></th>
-                  <th>Account</th>
-                  <th>Address</th>
-                  <th style="width:110px">Phone</th>
-                  <th style="width:160px">Seen on</th>
-                  <th style="width:96px">Status</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody id="pasteBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h2>Load brand lists</h2>
-        <p class="hint">
-          One-time import of a brand account file. Names, addresses, phones and
-          coordinates come across; specialty is guessed from the business name and
-          can be corrected. Nothing here counts as a verified clinician.
-        </p>
-        <button class="icon-btn sm" id="btnBrandBrowse">Choose a brand file</button>
-        <input type="file" id="brandFile" class="sr-only" accept=".json,application/json">
       </div>
     </section>
 
@@ -479,10 +453,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261101f"></script>
-<script src="auth.js?v=20261101f"></script>
-<script src="app.js?v=20261101f"></script>
-<script src="search.js?v=20261101f"></script>
-<script src="paste.js?v=20261101f"></script>
+<script src="config.js?v=20261101k"></script>
+<script src="auth.js?v=20261101k"></script>
+<script src="app.js?v=20261101k"></script>
+<script src="search.js?v=20261101k"></script>
+<script src="paste.js?v=20261101k"></script>
 </body>
 </html>

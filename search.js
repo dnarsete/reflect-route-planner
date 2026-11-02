@@ -1,28 +1,29 @@
-/* Reflect Route Planner — Find accounts
+/* Reflect Route Planner — Find
 
-   Searches the accounts stored in Supabase the way the route lists in
-   this project have always been built: pick an anchor, draw a tight
-   radius, then narrow by specialty and by the licence level of whoever
-   is on staff. Results go straight into the planner as stops.
+   One flow: say where you are looking and what you want, pick which
+   sources to look in, press the button. Saved accounts and anything read
+   off the websites you listed come back in a single list, deduplicated,
+   ready to drop into a route.
 
-   Chains are excluded by default — they buy at corporate.
-
-   The BOTOX Cosmetic directory is not reachable from the browser (cross
-   origin, and the listings are rendered by script), so it will be added
-   later as a second source behind these same filters. */
+   The settings in step 1 drive every source - they are not a separate
+   filter that happens to sit above the site list. */
 (function () {
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
 
   var S = {
-    anchor: null,            /* {label, lat, lng} */
-    all: [],                 /* every candidate owned by this rep */
-    results: [],
-    excl: []                 /* chain name patterns */
+    anchor: null,     /* {label, lat, lng, precise} */
+    all: [],          /* saved candidates */
+    excl: [],         /* chain name patterns */
+    results: []       /* what is on screen: {row, isNew, dist, sources, conflicts, flagged} */
   };
 
+  var TIER = { 1: 'Esthetician', 2: 'RN', 3: 'NP / PA-C', 4: 'MD / DO' };
+
   /* ---------------- helpers ---------------- */
+
+  function clean(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
 
   function miles(a, b) {
     var R = 3958.8, toR = Math.PI / 180;
@@ -34,11 +35,11 @@
   }
 
   function fullAddress(c) {
-    return [[c.street, c.suite].filter(Boolean).join(' '), c.city, c.state, c.zip]
-      .filter(Boolean).join(', ');
+    return [[c.street, c.suite && ('Ste ' + c.suite)].filter(Boolean).join(' '),
+            c.city, c.state, c.zip].filter(Boolean).join(', ');
   }
 
-  function note(text, kind) {
+  function msg(text, kind) {
     var el = $('findMsg');
     if (!el) return;
     el.textContent = text || '';
@@ -50,9 +51,6 @@
 
   /* ---------------- anchor ---------------- */
 
-  /* Accepts a street address, city, ZIP, or a county name. Nominatim
-     handles all four; a county resolves to its centroid, which is a wide
-     net, so the UI warns when the match is not a street address. */
   function geocodeAnchor(text) {
     var url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' +
               encodeURIComponent(text);
@@ -62,27 +60,35 @@
         if (!j || !j.length) throw new Error('not found');
         var hit = j[0], ad = hit.address || {};
         return {
-          label: hit.display_name,
-          lat: parseFloat(hit.lat),
-          lng: parseFloat(hit.lon),
+          label: hit.display_name, lat: parseFloat(hit.lat), lng: parseFloat(hit.lon),
           precise: !!(ad.house_number && ad.road)
         };
       });
   }
 
+  function ensureAnchor() {
+    var text = clean($('findAnchor').value);
+    if (!text) return Promise.reject(new Error('Type where you want to search, or use your current location.'));
+    if (S.anchor && S.anchor.label === text) return Promise.resolve(S.anchor);
+    return geocodeAnchor(text).then(function (a) {
+      a.label = text;
+      S.anchor = a;
+      return a;
+    }).catch(function () { throw new Error('Could not find "' + text + '".'); });
+  }
+
   function useMyLocation() {
-    if (!navigator.geolocation) { note('This browser cannot share a location.', 'err'); return; }
-    note('Getting your location…');
+    if (!navigator.geolocation) { msg('This browser cannot share a location.', 'err'); return; }
+    msg('Getting your location…');
     navigator.geolocation.getCurrentPosition(function (pos) {
       S.anchor = { label: 'Current location', lat: pos.coords.latitude, lng: pos.coords.longitude, precise: true };
       $('findAnchor').value = 'Current location';
-      note('Anchored on your current location.', 'ok');
-      run();
-    }, function () { note('Could not get your location. Type an address instead.', 'err'); },
+      msg('Anchored on your current location.', 'ok');
+    }, function () { msg('Could not get your location. Type an address instead.', 'err'); },
     { enableHighAccuracy: true, timeout: 10000 });
   }
 
-  /* ---------------- data ---------------- */
+  /* ---------------- saved accounts ---------------- */
 
   function loadAll() {
     if (!db() || !me()) return Promise.resolve();
@@ -91,6 +97,7 @@
       .eq('status', 'active')
       .then(function (res) {
         S.all = (res && res.data) ? res.data : [];
+        $('savedCount').textContent = '(' + S.all.length + ')';
         return db().from('exclusions').select('name_pattern');
       })
       .then(function (res) {
@@ -100,203 +107,274 @@
       });
   }
 
-  function looksLikeChain(c) {
+  function isChain(c) {
     if (c.is_chain) return true;
     var n = (c.name || '').toLowerCase();
-    for (var i = 0; i < S.excl.length; i++) {
-      if (n.indexOf(S.excl[i]) >= 0) return true;
-    }
+    for (var i = 0; i < S.excl.length; i++) if (n.indexOf(S.excl[i]) >= 0) return true;
     return false;
   }
 
-  function openOn(c, day) {
-    var h = c.hours || {};
-    var iv = h[day];
-    return Array.isArray(iv) && iv.length > 0;
+  function params() {
+    return {
+      radius: parseFloat($('findRadius').value) || 5,
+      minTier: $('findTier').value ? parseInt($('findTier').value, 10) : null,
+      day: $('findDay').value,
+      mustBeOpen: $('findOpen').checked,
+      hideChains: $('findChains').checked,
+      specs: Array.prototype.slice.call(document.querySelectorAll('#findSpecs input:checked'))
+                  .map(function (i) { return i.value; })
+    };
   }
 
-  /* ---------------- search ---------------- */
+  /* Applied to saved accounts and to anything read off a website alike. */
+  function passes(c, p, dist) {
+    if (p.hideChains && isChain(c)) return false;
+    if (p.minTier && (!c.cert_tier || c.cert_tier < p.minTier)) return false;
+    if (p.mustBeOpen) {
+      var iv = (c.hours || {})[p.day];
+      if (!Array.isArray(iv) || !iv.length) return false;
+    }
+    if (p.specs.length) {
+      var tags = c.specialty || [];
+      if (!p.specs.some(function (w) { return tags.indexOf(w) >= 0; })) return false;
+    }
+    if (dist != null && dist > p.radius) return false;
+    return true;
+  }
 
-  function run() {
-    if (!S.anchor) { note('Set a starting point first.', 'err'); return; }
+  /* ---------------- geocoding what came off the sites ---------------- */
 
-    var radius = parseFloat($('findRadius').value) || 5;
-    var minTier = $('findTier').value ? parseInt($('findTier').value, 10) : null;
-    var day = $('findDay').value;
-    var mustBeOpen = $('findOpen').checked;
-    var hideChains = $('findChains').checked;
-    var wantSpec = Array.prototype.slice
-      .call(document.querySelectorAll('#findSpecs input:checked'))
-      .map(function (i) { return i.value; });
+  /* A row read off a web page has no coordinates, so the radius could not
+     be applied to it - which would leave the settings in step 1 only half
+     connected. Look each one up, and insist on a house number: a result
+     that falls back to a town centre is worse than no result, because it
+     lands the stop in the middle of a city and quietly bends the route. */
+  function geocodeRow(r) {
+    /* A street with no town or ZIP is not enough to place a pin. Asking
+       anyway returns the nearest road of that name, which is how a stop
+       ends up miles from the real address and silently bends the route.
+       Better to show no distance than a confident wrong one. */
+    if (!r.street || (!r.city && !r.zip)) return Promise.resolve(false);
+    /* Leave the suite out: "10881 West Asbury Ave Ste 200, Lakewood, CO"
+       finds nothing, the same line without the suite resolves exactly. */
+    var q = [r.street, r.city, r.state, r.zip].filter(Boolean).join(', ');
+    var url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' +
+              encodeURIComponent(q);
+    return fetch(url, { headers: { 'Accept': 'application/json' } })
+      .then(function (x) { return x.json(); })
+      .then(function (j) {
+        if (!j || !j.length) return false;
+        var ad = j[0].address || {};
+        if (!ad.house_number || !ad.road) return false;      /* centroid - refuse it */
+        r.lat = parseFloat(j[0].lat);
+        r.lng = parseFloat(j[0].lon);
+        r.geocode_quality = 'house_number';
+        return true;
+      })
+      .catch(function () { return false; });
+  }
 
-    var out = [];
-    S.all.forEach(function (c) {
-      if (typeof c.lat !== 'number' || typeof c.lng !== 'number') return;
-      var d = miles(S.anchor, c);
-      if (d > radius) return;
-      if (hideChains && looksLikeChain(c)) return;
-      if (minTier && (!c.cert_tier || c.cert_tier < minTier)) return;
-      if (mustBeOpen && !openOn(c, day)) return;
-      if (wantSpec.length) {
-        var tags = c.specialty || [];
-        var hit = wantSpec.some(function (w) { return tags.indexOf(w) >= 0; });
-        if (!hit) return;
+  /* Nominatim asks for no more than one call a second. */
+  function geocodeAll(rows, onProgress) {
+    var i = 0;
+    function next() {
+      if (i >= rows.length) return Promise.resolve();
+      var r = rows[i++];
+      if (onProgress) onProgress(i, rows.length);
+      return geocodeRow(r).then(function () {
+        return new Promise(function (go) { setTimeout(go, 1100); }).then(next);
+      });
+    }
+    return next();
+  }
+
+  /* ---------------- the one button ---------------- */
+
+  function runSearch() {
+    var btn = $('btnFindSearch');
+    var jobs = $('useSaved') && window.RP_SITES ? window.RP_SITES.gather() : [];
+    var wantSaved = $('useSaved').checked;
+
+    if (!wantSaved && !jobs.length) {
+      msg('Tick your saved accounts, or add a website to search.', 'err'); return;
+    }
+
+    btn.disabled = true;
+    msg('Looking up that location…');
+
+    ensureAnchor().then(function (a) {
+      if (!a.precise) {
+        msg('Matched a wide area — ' + a.label + '. A town or street address gives a tighter cluster.', 'warn');
       }
-      c._d = d;
-      out.push(c);
-    });
+      if (!jobs.length) return { sets: [], notes: [] };
+      msg('Reading ' + jobs.length + ' site' + (jobs.length === 1 ? '' : 's') + '…');
+      return window.RP_SITES.fetchAll(jobs, function (d, n) { msg('Read ' + d + ' of ' + n + ' sites…'); });
+    }).then(function (fetched) {
+      var p = params(), out = [];
+      var pendingGeo = [], mergedSets = null, notes = fetched.notes;
 
-    out.sort(function (a, b) { return a._d - b._d; });
-    S.results = out;
-    render();
+      if (wantSaved) {
+        S.all.forEach(function (c) {
+          if (typeof c.lat !== 'number' || typeof c.lng !== 'number') return;
+          var d = miles(S.anchor, c);
+          if (!passes(c, p, d)) return;
+          out.push({ row: c, isNew: false, dist: d, sources: [c.source || 'saved'], conflicts: [], flagged: '' });
+        });
+      }
+
+      if (fetched.sets.length) {
+        var merged = window.RP_SITES.crossReference(fetched.sets, wantSaved ? S.all : []);
+        pendingGeo = merged.filter(function (m) {
+          return !m.match && typeof m.row.lat !== 'number' && (m.row.street || m.row.zip);
+        }).map(function (m) { return m.row; });
+        mergedSets = merged;
+      }
+
+      return { p: p, out: out, merged: mergedSets, geo: pendingGeo, notes: notes };
+    }).then(function (stage) {
+      if (!stage) return;
+      var p = stage.p, out = stage.out, notes = stage.notes || [];
+
+      return (stage.geo.length
+        ? (msg('Locating ' + stage.geo.length + ' new address' + (stage.geo.length === 1 ? '' : 'es') + '…'),
+           geocodeAll(stage.geo, function (d, n) { msg('Locating ' + d + ' of ' + n + '…'); }))
+        : Promise.resolve()
+      ).then(function () {
+        (stage.merged || []).forEach(function (m) {
+          if (m.match) return;                        /* already saved - the saved copy is listed */
+          var d = (typeof m.row.lat === 'number') ? miles(S.anchor, m.row) : null;
+          if (!passes(m.row, p, d)) return;
+          out.push({
+            row: m.row, isNew: true, dist: d,
+            sources: m.sources, conflicts: m.conflicts || [], flagged: m.flagged || ''
+          });
+        });
+
+      out.sort(function (a, b) {
+        if (a.dist == null) return 1;
+        if (b.dist == null) return -1;
+        return a.dist - b.dist;
+      });
+      S.results = out;
+      render();
+
+      var nNew = out.filter(function (x) { return x.isNew; }).length;
+      var parts = [out.length + (out.length === 1 ? ' account' : ' accounts')];
+      if (nNew) parts.push(nNew + ' new from websites');
+      if (notes.length) parts.push(notes.join(' · '));
+        msg(parts.join(' — '), notes.length ? 'warn' : 'ok');
+      });
+    }).catch(function (e) {
+      msg((e && e.message) || 'Something went wrong.', 'err');
+    }).then(function () { btn.disabled = false; });
   }
+
+  /* ---------------- results ---------------- */
 
   function render() {
-    var body = $('findBody');
-    var wrap = $('findResults');
-    var empty = $('findEmpty');
+    var body = $('findBody'), wrap = $('findResults'), empty = $('findEmpty');
     body.textContent = '';
 
     if (!S.results.length) {
       wrap.classList.add('hide');
       empty.classList.remove('hide');
       empty.textContent = S.all.length
-        ? 'Nothing inside that radius. Widen it, or loosen the filters.'
-        : 'No accounts loaded yet. Use "Load brand lists" below.';
+        ? 'Nothing matched. Widen the radius, or loosen the filters.'
+        : 'No saved accounts yet — load a brand list, or add a website above.';
       return;
     }
     empty.classList.add('hide');
     wrap.classList.remove('hide');
 
-    var TIER = { 1: 'Esthetician', 2: 'RN', 3: 'NP / PA-C', 4: 'MD / DO' };
-
-    S.results.forEach(function (c) {
+    S.results.forEach(function (r, idx) {
       var tr = document.createElement('tr');
+      if (r.isNew) tr.className = 'row-new';
 
-      function cell(text, cls) {
-        var td = document.createElement('td');
-        td.textContent = text == null ? '' : String(text);
-        if (cls) td.className = cls;
-        return td;
+      function td(content, cls) {
+        var c = document.createElement('td');
+        if (content && content.nodeType) c.appendChild(content);
+        else c.textContent = content == null ? '' : String(content);
+        if (cls) c.className = cls;
+        tr.appendChild(c);
+        return c;
       }
 
-      var pick = document.createElement('td');
       var cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = true;
-      cb.setAttribute('data-id', c.id);
-      pick.appendChild(cb);
-      tr.appendChild(pick);
+      cb.type = 'checkbox'; cb.checked = true;
+      cb.setAttribute('data-idx', String(idx));
+      td(cb);
 
-      tr.appendChild(cell(c._d.toFixed(1)));
-      tr.appendChild(cell(c.name));
-      tr.appendChild(cell(fullAddress(c)));
-      tr.appendChild(cell((c.specialty || []).join(', ')));
-      tr.appendChild(cell(c.cert_tier ? TIER[c.cert_tier] : 'unverified',
-                          c.cert_tier ? '' : 'muted'));
-      tr.appendChild(cell(c.phone));
+      td(r.dist == null ? '—' : r.dist.toFixed(1));
+
+      /* names read off a web page land wrong sometimes - fix them here */
+      if (r.isNew) {
+        var inp = document.createElement('input');
+        inp.className = 'name-edit';
+        inp.value = r.row.name || '';
+        inp.addEventListener('change', function () { r.row.name = clean(inp.value); });
+        td(inp);
+      } else {
+        td(r.row.name);
+      }
+
+      td(fullAddress(r.row));
+      td(r.row.cert_tier ? TIER[r.row.cert_tier] : 'unverified', r.row.cert_tier ? '' : 'muted');
+      td(r.row.phone || '');
+      td((r.isNew ? r.sources.length + '× ' : '') + r.sources.join(', '), 'muted');
+
+      var notes = [];
+      if (r.isNew) notes.push('new');
+      if (r.flagged) notes.push(r.flagged);
+      (r.conflicts || []).forEach(function (c) { notes.push(c.field + ': "' + c.a + '" vs "' + c.b + '"'); });
+      td(notes.join(' — '), notes.length > 1 ? 'warn-text' : 'muted');
+
       body.appendChild(tr);
     });
 
     $('findCount').textContent = S.results.length +
-      (S.results.length === 1 ? ' account' : ' accounts') + ' found';
+      (S.results.length === 1 ? ' account found' : ' accounts found');
   }
 
-  function sendToPlanner() {
-    var picked = {};
+  /* Ticked rows go to the planner. Anything found on a website is saved
+     to the account list on the way through, so the work is not lost. */
+  function addToRoute() {
+    var picked = [];
     Array.prototype.slice.call(document.querySelectorAll('#findBody input:checked'))
-      .forEach(function (cb) { picked[cb.getAttribute('data-id')] = true; });
+      .forEach(function (cb) { picked.push(S.results[parseInt(cb.getAttribute('data-idx'), 10)]); });
 
-    var rows = S.results.filter(function (c) { return picked[c.id]; }).map(function (c) {
-      return {
-        name: c.name, address: fullAddress(c), phone: c.phone || '',
-        lat: c.lat, lng: c.lng
-      };
-    });
-    if (!rows.length) { note('Tick at least one account.', 'err'); return; }
+    if (!picked.length) { msg('Tick at least one account.', 'err'); return; }
 
-    var n = window.RP_APP.addStops(rows);
-    window.RP_APP.toast(n + ' stop' + (n === 1 ? '' : 's') + ' added. Set your start and end, then Plan route.', 'ok');
-    window.RP_APP.showTab('stops');
-  }
-
-  /* ---------------- brand-list loader ---------------- */
-
-  /* The brand JSON files carry name/address/phone/website/brand and, for
-     most rows, coordinates already resolved. Specialty is inferred from
-     the business name as a starting point — it is editable afterwards,
-     and nothing here claims a clinician was verified. */
-  function inferSpecialty(name) {
-    var n = (name || '').toLowerCase(), out = [];
-    if (/derm/.test(n)) out.push('Dermatology');
-    if (/plastic surg/.test(n)) out.push('Plastic surgery');
-    if (/facial plastic|facial aesthet/.test(n)) out.push('Facial plastics');
-    if (/cosmetic surg/.test(n)) out.push('Cosmetic surgery');
-    if (/ob.?gyn|midwif|women/.test(n)) out.push('OB/GYN');
-    if (/dental|dentist/.test(n)) out.push('Dentistry');
-    if (/ent\b|sinus/.test(n)) out.push('ENT');
-    if (!out.length && /med ?spa|medspa|aesthet|skin|laser|beauty|glow|rejuven/.test(n)) out.push('Med spa');
-    return out;
-  }
-
-  function importBrandFile(file) {
+    var fresh = picked.filter(function (r) { return r.isNew; });
     var user = me();
-    if (!user) { note('Sign in first.', 'err'); return; }
 
-    var fr = new FileReader();
-    fr.onload = function () {
-      var rows;
-      try { rows = JSON.parse(fr.result); } catch (e) { note('That file is not valid JSON.', 'err'); return; }
-      if (!Array.isArray(rows)) { note('Expected a list of accounts.', 'err'); return; }
+    var step = (fresh.length && user && db())
+      ? db().from('candidates').insert(fresh.map(function (r) {
+          return {
+            owner_id: user.id, name: r.row.name,
+            street: r.row.street || null, suite: r.row.suite || null,
+            city: r.row.city || null, state: r.row.state || null, zip: r.row.zip || null,
+            phone: r.row.phone || null,
+            specialty: r.row.specialty || [],
+            lat: (typeof r.row.lat === 'number') ? r.row.lat : null,
+            lng: (typeof r.row.lng === 'number') ? r.row.lng : null,
+            source: r.sources.join(' + ')
+          };
+        }))
+      : Promise.resolve();
 
-      var seen = {};
-      S.all.forEach(function (c) { seen[(c.name || '').toLowerCase() + '|' + (c.zip || '')] = true; });
-
-      var batch = [];
-      rows.forEach(function (r) {
-        var name = r.Name || r.name;
-        if (!name) return;
-        var zip = String(r.Zip || r.zip || '').slice(0, 5);
-        if (seen[name.toLowerCase() + '|' + zip]) return;
-        seen[name.toLowerCase() + '|' + zip] = true;
-
-        var la = parseFloat(r.lat), ln = parseFloat(r.lng);
-        batch.push({
-          owner_id: user.id,
-          name: name,
-          street: r.Address || r.address || null,
-          city: r.City || r.city || null,
-          state: r.State || r.state || null,
-          zip: zip || null,
-          phone: (r.Phone || r.phone || '').trim() || null,
-          website: r.Website || r.website || null,
-          source: (r.Brand || r.brand || 'Brand list') + ' list',
-          specialty: inferSpecialty(name),
-          lat: isFinite(la) ? la : null,
-          lng: isFinite(ln) ? ln : null,
-          geocode_quality: isFinite(la) ? 'from_list' : null
-        });
-      });
-
-      if (!batch.length) { note('Nothing new in that file — all of it is already loaded.', 'ok'); return; }
-
-      note('Loading ' + batch.length + ' accounts…');
-      var chunks = [], i;
-      for (i = 0; i < batch.length; i += 100) chunks.push(batch.slice(i, i + 100));
-
-      chunks.reduce(function (p, chunk) {
-        return p.then(function () { return db().from('candidates').insert(chunk); });
-      }, Promise.resolve())
-        .then(function () { return loadAll(); })
-        .then(function () {
-          note('Loaded ' + batch.length + ' accounts. ' + S.all.length + ' total.', 'ok');
-          if (S.anchor) run(); else render();
-        })
-        .catch(function (e) {
-          note('Load failed: ' + ((e && e.message) || 'unknown error'), 'err');
-        });
-    };
-    fr.readAsText(file);
+    step.then(function () {
+      var n = window.RP_APP.addStops(picked.map(function (r) {
+        return {
+          name: r.row.name, address: fullAddress(r.row), phone: r.row.phone || '',
+          lat: r.row.lat, lng: r.row.lng
+        };
+      }));
+      window.RP_APP.toast(n + ' stop' + (n === 1 ? '' : 's') + ' added. Set your start and end, then Plan route.', 'ok');
+      if (fresh.length) loadAll();
+      window.RP_APP.showTab('stops');
+    }).catch(function (e) {
+      msg('Could not save the new accounts: ' + ((e && e.message) || 'unknown error'), 'err');
+    });
   }
 
   /* ---------------- wiring ---------------- */
@@ -305,22 +383,8 @@
     if (!$('tab-find')) return;
 
     $('btnFindLocate').addEventListener('click', useMyLocation);
-
-    $('btnFindSearch').addEventListener('click', function () {
-      var text = ($('findAnchor').value || '').trim();
-      if (!text) { note('Type an address, city, ZIP or county.', 'err'); return; }
-      if (S.anchor && S.anchor.label === text) { run(); return; }
-      note('Looking up that location…');
-      geocodeAnchor(text).then(function (a) {
-        S.anchor = a;
-        note(a.precise ? 'Anchored on ' + a.label
-                       : 'Matched a wide area — ' + a.label + '. A town or street address gives a tighter cluster.',
-             a.precise ? 'ok' : 'warn');
-        run();
-      }).catch(function () { note('Could not find that location.', 'err'); });
-    });
-
-    $('btnFindAdd').addEventListener('click', sendToPlanner);
+    $('btnFindSearch').addEventListener('click', runSearch);
+    $('btnFindAdd').addEventListener('click', addToRoute);
 
     $('btnFindAll').addEventListener('click', function () {
       var boxes = document.querySelectorAll('#findBody input[type=checkbox]');
@@ -328,34 +392,19 @@
       Array.prototype.slice.call(boxes).forEach(function (b) { b.checked = anyOff; });
     });
 
-    $('btnBrandBrowse').addEventListener('click', function () { $('brandFile').click(); });
-    $('brandFile').addEventListener('change', function (e) {
-      var f = e.target.files && e.target.files[0];
-      if (f) importBrandFile(f);
-      e.target.value = '';
+    $('findAnchor').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
     });
 
-    ['findRadius', 'findTier', 'findDay', 'findOpen', 'findChains'].forEach(function (id) {
-      var el = $(id);
-      if (el) el.addEventListener('change', function () { if (S.anchor) run(); });
-    });
-
-      window.RP_FIND = {
+    window.RP_FIND = {
       all: function () { return S.all; },
-      reload: function () {
-        loadAll().then(function () {
-          note(S.all.length + ' accounts available to search.');
-          if (S.anchor) run(); else render();
-        });
-      }
+      reload: function () { return loadAll().then(render); }
     };
 
     window.RP_AUTH.ready(function (user) {
       if (!user) return;
       loadAll().then(function () {
-        var n = S.all.length;
-        note(n ? n + ' accounts available to search.' : 'No accounts loaded yet — use "Load brand lists" below.');
-        render();
+        if (!S.all.length) msg('No accounts saved yet — load a brand list, or add a website to search.');
       });
     });
   }
