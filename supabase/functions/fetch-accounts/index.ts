@@ -226,7 +226,9 @@ function parseProllenium(markersHtml: string) {
 }
 
 async function grabProllenium(q: { lat: number; lng: number; radius: number }) {
-  const miles = Math.max(1, Math.min(100, q.radius || 25));
+  /* The planner offers 2, 5 and 25 miles; hold the function to the same
+     ceiling so a stray value cannot pull a hundred-mile sweep. */
+  const miles = Math.max(1, Math.min(25, q.radius || 5));
   const dLat = miles / 69;
   const dLng = miles / (69 * Math.max(0.2, Math.cos(q.lat * Math.PI / 180)));
 
