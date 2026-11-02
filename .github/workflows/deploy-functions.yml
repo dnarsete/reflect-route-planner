@@ -21,4 +21,5 @@ jobs:
       - name: Deploy fetch-accounts
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: supabase functions deploy fetch-accounts --project-ref hnuyelzryztlmjdeicje
+      run: supabase functions deploy fetch-accounts --project-ref hnuyelzryztlmjdeicje --yes
+      
