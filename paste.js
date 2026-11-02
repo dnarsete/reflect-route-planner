@@ -172,15 +172,18 @@
   /* ---------------- cross-reference ---------------- */
 
   function gather() {
-    var sets = [];
+    var jobs = [];
     for (var i = 1; i <= P.slots; i++) {
-      var nameEl = $('srcName' + i), txtEl = $('srcText' + i);
-      if (!nameEl || !txtEl) continue;
-      var sname = clean(nameEl.value) || ('Source ' + i);
-      var rows = parse(txtEl.value);
-      if (rows.length) sets.push({ source: sname, rows: rows });
+      var nameEl = $('srcName' + i), urlEl = $('srcUrl' + i);
+      if (!nameEl || !urlEl) continue;
+      var u = clean(urlEl.value);
+      if (!u) continue;
+      if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+      var label = clean(nameEl.value);
+      if (!label) { try { label = new URL(u).hostname.replace(/^www\./, ''); } catch (e) { label = 'Site ' + i; } }
+      jobs.push({ source: label, url: u });
     }
-    return sets;
+    return jobs;
   }
 
   function crossReference(sets, existing) {
@@ -403,25 +406,86 @@
     wrap.className = 'src-slot';
 
     var lab = document.createElement('label');
-    lab.setAttribute('for', 'srcName' + i);
-    lab.textContent = 'Source ' + i;
+    lab.setAttribute('for', 'srcUrl' + i);
+    lab.textContent = 'Site ' + i;
 
     var nm = document.createElement('input');
     nm.id = 'srcName' + i;
-    nm.placeholder = 'e.g. BOTOX Cosmetic directory, Google, Yelp';
+    nm.placeholder = 'Label (optional) - e.g. BOTOX directory, Google';
     nm.setAttribute('list', 'srcSuggest');
     if (presetName) nm.value = presetName;
 
-    var ta = document.createElement('textarea');
-    ta.id = 'srcText' + i;
-    ta.rows = 4;
-    ta.placeholder = 'Paste the search results from that site here';
+    var url = document.createElement('input');
+    url.id = 'srcUrl' + i;
+    url.type = 'url';
+    url.placeholder = 'https://…  paste the page address here';
+    url.setAttribute('spellcheck', 'false');
 
-    wrap.appendChild(lab); wrap.appendChild(nm); wrap.appendChild(ta);
+    wrap.appendChild(lab); wrap.appendChild(nm); wrap.appendChild(url);
     $('srcSlots').appendChild(wrap);
 
     $('btnSrcAdd').disabled = P.slots >= MAX_SOURCES;
-    $('srcCount').textContent = P.slots + ' of ' + MAX_SOURCES + ' sources';
+    $('srcCount').textContent = P.slots + ' of ' + MAX_SOURCES + ' sites';
+  }
+
+  /* ---------------- fetching ---------------- */
+
+  /* A browser cannot read another site directly - the cross-origin rule
+     stops it. r.jina.ai fetches the page server-side and hands back its
+     rendered text, which is enough to read a name, address and phone.
+
+     It does not execute a site's own scripts, so pages that draw their
+     listings after load (botoxcosmetic's /search and /browse) still come
+     back empty. Their individual provider pages read perfectly. */
+  var READER = 'https://r.jina.ai/';
+
+  function fetchPage(url) {
+    return fetch(READER + url, { headers: { 'Accept': 'text/plain' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      });
+  }
+
+  /* The reader puts the page title on the first line and renders phone
+     numbers as tel: links, so those are more reliable than scraping the
+     body text for them. */
+  function fromPage(text, fallbackName) {
+    var title = (text.match(/^Title:\s*(.+)$/m) || [])[1] || '';
+    title = clean(title).split(/\s[|\-\u2013\u2014]\s/)[0].trim();
+
+    var rows = parse(text);
+
+    if (rows.length > 1) {
+      return rows.filter(function (r) { return !looksNoiseName(r.name); });
+    }
+
+    if (rows.length === 1) {
+      if (!rows[0].name || looksNoiseName(rows[0].name)) rows[0].name = title || fallbackName;
+      if (!rows[0].phone) {
+        var tel = text.match(/tel:\+?1?(\d{10})/);
+        if (tel) rows[0].phone = tel[1];
+      }
+      return rows;
+    }
+
+    /* no address found - still worth keeping if there is a phone */
+    var tel2 = text.match(/tel:\+?1?(\d{10})/);
+    if (title && tel2) {
+      return [{ name: title, street: '', suite: '', city: '', state: '', zip: '', phone: tel2[1] }];
+    }
+    return [];
+  }
+
+  /* The reader's markdown leaves link labels and nav text lying around;
+     a "name" that is really a heading or a menu item should not win over
+     the page title. */
+  function looksNoiseName(n) {
+    if (!n) return true;
+    var t = n.replace(/^[#*\->\s]+/, '').trim();      /* markdown headings and bullets */
+    return !t ||
+           /^(get directions|directions|book|call|website|email|home|menu|location|hours|contact|about|services|our team|find a provider)/i.test(t) ||
+           t.length > 70 || t.indexOf('](') >= 0;
   }
 
   /* ---------------- wiring ---------------- */
@@ -435,16 +499,40 @@
     $('btnSrcAdd').addEventListener('click', function () { addSlot(); });
 
     $('btnPasteXref').addEventListener('click', function () {
-      var sets = gather();
-      if (!sets.length) { msg('Paste some results into at least one source first.', 'err'); return; }
+      var jobs = gather();
+      if (!jobs.length) { msg('Paste at least one web address first.', 'err'); return; }
 
-      var total = sets.reduce(function (n, s) { return n + s.rows.length; }, 0);
-      msg('Read ' + total + ' rows from ' + sets.length + ' source' + (sets.length === 1 ? '' : 's') + '. Cross-referencing…');
+      var btn = $('btnPasteXref');
+      btn.disabled = true;
+      var sets = [], done = 0, notes = [];
 
-      var existing = (window.RP_FIND && window.RP_FIND.all()) || [];
-      P.review = crossReference(sets, existing);
-      renderReview(P.review);
-      msg('');
+      msg('Reading ' + jobs.length + ' site' + (jobs.length === 1 ? '' : 's') + '…');
+
+      jobs.reduce(function (chain, job) {
+        return chain.then(function () {
+          return fetchPage(job.url).then(function (text) {
+            var rows = fromPage(text, job.source);
+            done++;
+            if (rows.length) sets.push({ source: job.source, rows: rows });
+            else notes.push(job.source + ': nothing readable (the page may build its list with script)');
+            msg('Read ' + done + ' of ' + jobs.length + '…');
+          }).catch(function (e) {
+            done++;
+            notes.push(job.source + ': ' + ((e && e.message) || 'could not be read'));
+          });
+        });
+      }, Promise.resolve()).then(function () {
+        btn.disabled = false;
+        if (!sets.length) { msg(notes.join(' · ') || 'Nothing could be read from those addresses.', 'err'); return; }
+
+        var total = sets.reduce(function (n, x) { return n + x.rows.length; }, 0);
+        var existing = (window.RP_FIND && window.RP_FIND.all()) || [];
+        P.review = crossReference(sets, existing);
+        renderReview(P.review);
+        msg('Read ' + total + ' account' + (total === 1 ? '' : 's') + ' from ' +
+            sets.length + ' of ' + jobs.length + ' sites.' +
+            (notes.length ? ' ' + notes.join(' · ') : ''), notes.length ? 'warn' : 'ok');
+      });
     });
 
     $('btnPasteSave').addEventListener('click', save);

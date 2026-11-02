@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261031g">
+<link rel="stylesheet" href="styles.css?v=20261101b">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -295,11 +295,13 @@
       </div>
 
       <div class="card">
-        <h2>Add accounts from websites</h2>
+        <h2>Pull accounts from websites</h2>
         <p class="hint">
-          Run the same search on each site, paste what it returns, then cross-reference.
+          Paste up to ten web addresses and the app reads each one for accounts.
           An account found on several sites is a stronger record; one where the sites
-          disagree is held back for you to look at.
+          disagree is held back for you to look at. Pages that build their list with
+          script &mdash; the BOTOX directory&rsquo;s own search results, for one &mdash;
+          cannot be read this way, but individual provider pages can.
         </p>
 
         <datalist id="srcSuggest">
@@ -315,12 +317,12 @@
         <div id="srcSlots"></div>
 
         <div class="row wrap" style="margin-top:10px">
-          <button class="icon-btn sm ghost" id="btnSrcAdd">Add another source</button>
+          <button class="icon-btn sm ghost" id="btnSrcAdd">Add another site</button>
           <span class="note" id="srcCount"></span>
         </div>
 
         <div class="row wrap" style="margin-top:12px">
-          <button class="icon-btn sm primary" id="btnPasteXref">Cross-reference</button>
+          <button class="icon-btn sm primary" id="btnPasteXref">Fetch &amp; cross-reference</button>
         </div>
         <p class="note" id="pasteMsg" style="margin-top:10px"></p>
 
@@ -477,10 +479,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261031g"></script>
-<script src="auth.js?v=20261031g"></script>
-<script src="app.js?v=20261031g"></script>
-<script src="search.js?v=20261031g"></script>
-<script src="paste.js?v=20261031g"></script>
+<script src="config.js?v=20261101b"></script>
+<script src="auth.js?v=20261101b"></script>
+<script src="app.js?v=20261101b"></script>
+<script src="search.js?v=20261101b"></script>
+<script src="paste.js?v=20261101b"></script>
 </body>
 </html>

@@ -257,3 +257,5 @@ td.muted { color: var(--muted); }
 }
 tr.row-warn td { background: rgba(245, 158, 11, .08); }
 .warn-text { color: var(--warn); }
+.src-slot input[type=url] { margin-top: 6px; }
+.note.warn { color: var(--warn); }
