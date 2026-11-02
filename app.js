@@ -48,6 +48,25 @@
   }
   var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 
+  /* Straight-line miles - only used to decide which stops sit nearest the
+     start, so road distance would be overkill here. */
+  function crowMiles(aLat, aLng, bLat, bLng) {
+    var R = 3958.8, toR = Math.PI / 180;
+    var dLat = (bLat - aLat) * toR, dLng = (bLng - aLng) * toR;
+    var la = aLat * toR, lb = bLat * toR;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(la) * Math.cos(lb) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return R * 2 * Math.asin(Math.sqrt(h));
+  }
+
+  /* How many calls fit in a day. Find owns the control; the planner reads
+     the same one so both sides agree. */
+  function dayCap() {
+    var el = $('findMaxStops');
+    var n = el ? parseInt(el.value, 10) : 15;
+    return (n && n > 0) ? n : 15;
+  }
+
   /* ============================ state ============================ */
   var LS = 'reflect_route_planner_v1';
   var LS_GEO = 'reflect_route_geocache_v1';
@@ -866,9 +885,20 @@
         var stops = state.stops.filter(function (x) { return x.geo === 'ok' && x.lat != null; });
         if (!stops.length) throw new Error('None of the addresses could be located.');
         if (s.startLat == null) throw new Error("Your starting address couldn't be located.");
-        if (stops.length > 30) {
-          throw new Error('That is ' + stops.length + ' stops. A sales day holds about fifteen - ' +
-                          'use Find to take the closest ones, or clear some here.');
+        /* A territory file can carry a hundred and forty-odd accounts. That
+           is not a day, but it is not an error either - take the ones
+           closest to where the day starts and plan those. The rest stay in
+           the list, so tomorrow from a different start gives a different
+           fifteen. */
+        var cap = dayCap();
+        if (stops.length > cap) {
+          var dropped = stops.length - cap;
+          stops = stops.slice().sort(function (a, b) {
+            return crowMiles(s.startLat, s.startLng, a.lat, a.lng) -
+                   crowMiles(s.startLat, s.startLng, b.lat, b.lng);
+          }).slice(0, cap);
+          toast('That was ' + (cap + dropped) + ' stops - routing the ' + cap +
+                ' closest to your start. The rest stay in your list.', 'ok', 7000);
         }
 
         var endPt = s.roundTrip
@@ -953,6 +983,8 @@
       })
       .catch(function (e) {
         toast(e.message || String(e), 'err', 6000);
+        /* never leave them looking at an empty Route tab */
+        if (!state.route) showTab('stops');
       })
       .then(function () {
         planning = false;
