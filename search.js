@@ -276,6 +276,41 @@
     return next();
   }
 
+  /* ---------------- brand directories ---------------- */
+
+  /* Prollenium's locator answers only a cross-origin POST, which a page
+     cannot make, so it goes through the reader function. The anchor and
+     radius are handed straight to it - the same ones that build the BOTOX
+     search URL. */
+  function fetchProllenium(anchorPt, radius) {
+    var cfg = window.RP_CONFIG || {};
+    if (!cfg.FETCH_FN) return Promise.resolve(null);
+
+    return fetch(cfg.FETCH_FN, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': cfg.SUPABASE_KEY,
+        'Authorization': 'Bearer ' + cfg.SUPABASE_KEY
+      },
+      body: JSON.stringify({
+        prollenium: { lat: anchorPt.lat, lng: anchorPt.lng, radius: radius }
+      })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var hit = ((d && d.results) || []).filter(function (x) { return x.url === 'prollenium'; })[0];
+        if (!hit) return null;
+        if (!hit.ok || !hit.rows.length) {
+          return { error: hit.error || 'Prollenium returned nothing.' };
+        }
+        return { source: 'Prollenium directory', rows: hit.rows };
+      })
+      .catch(function (e) {
+        return { error: 'Prollenium: ' + ((e && e.message) || 'could not be reached') };
+      });
+  }
+
   /* ---------------- the one button ---------------- */
 
   function runSearch() {
@@ -287,8 +322,9 @@
       : [];
     var wantSaved = $('useSaved').checked;
 
-    if (!wantSaved && !jobs.length) {
-      msg('Tick your saved accounts, or add a website to search.', 'err'); return;
+    var wantPro = $('useProllenium') && $('useProllenium').checked;
+    if (!wantSaved && !jobs.length && !wantPro) {
+      msg('Pick somewhere to look — your saved accounts, Prollenium, or a website.', 'err'); return;
     }
 
     btn.disabled = true;
@@ -298,9 +334,23 @@
       if (!a.precise) {
         msg('Matched a wide area — ' + a.label + '. A town or street address gives a tighter cluster.', 'warn');
       }
-      if (!jobs.length) return { sets: [], notes: [] };
-      msg('Reading ' + jobs.length + ' site' + (jobs.length === 1 ? '' : 's') + '…');
-      return window.RP_SITES.fetchAll(jobs, function (d, n) { msg('Read ' + d + ' of ' + n + ' sites…'); });
+      var radius = parseFloat($('findRadius').value) || 5;
+      var wantPro = $('useProllenium') && $('useProllenium').checked;
+
+      var siteWork = jobs.length
+        ? (msg('Reading ' + jobs.length + ' site' + (jobs.length === 1 ? '' : 's') + '…'),
+           window.RP_SITES.fetchAll(jobs, function (d, n) { msg('Read ' + d + ' of ' + n + ' sites…'); }))
+        : Promise.resolve({ sets: [], notes: [] });
+
+      var proWork = wantPro ? fetchProllenium(a, radius) : Promise.resolve(null);
+
+      return Promise.all([siteWork, proWork]).then(function (both) {
+        var out = both[0];
+        var pro = both[1];
+        if (pro && pro.rows) out.sets.push(pro);
+        else if (pro && pro.error) out.notes.push(pro.error);
+        return out;
+      });
     }).then(function (fetched) {
       var p = params(), out = [];
       var pendingGeo = [], mergedSets = null, notes = fetched.notes;

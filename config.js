@@ -11,5 +11,9 @@
    not something that belongs next to orders and Shopify tokens). */
 window.RP_CONFIG = {
   SUPABASE_URL: 'https://hnuyelzryztlmjdeicje.supabase.co',
-  SUPABASE_KEY: 'sb_publishable_Oz-oQmTZP0_R6Q3AlgxkkQ_3qqLcSfm'
+  SUPABASE_KEY: 'sb_publishable_Oz-oQmTZP0_R6Q3AlgxkkQ_3qqLcSfm',
+
+  /* Server-side reader. Needed for anything a browser cannot reach
+     directly - the Prollenium locator answers only a cross-origin POST. */
+  FETCH_FN: 'https://hnuyelzryztlmjdeicje.supabase.co/functions/v1/fetch-accounts'
 };
