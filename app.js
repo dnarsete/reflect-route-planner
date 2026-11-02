@@ -704,9 +704,39 @@
 
   /* ============================ optimizer ============================ */
   /* pts index 0 = start, 1..n = stops, n+1 = end.
-     The cost of an ordering is driving minutes plus a heavy penalty for every
-     minute a fixed appointment would be missed, so the search lands on an order
-     that both keeps appointments and minimizes windshield time. */
+     An ordering is judged in priority order: keep every fixed appointment,
+     never drive away from where the day finishes, end the day earliest, drive
+     least. Driving minutes alone is what produced the Elevation -> DollFace ->
+     Original Glam zigzag - the total was fine and the map was wrong. */
+
+  /* Crow-flight miles from the start, and from each stop, to where the day
+     finishes. Null on a round trip: a loop cannot keep approaching its own
+     finish, so "one direction" means something else there - a single clean
+     circuit that never crosses itself, which is what least driving already
+     gives you. Rebuilt once per plan, because routeCost runs thousands of
+     times. */
+  var endDist = null, startEndDist = 0;
+
+  function buildEndDist(stops) {
+    var s = state.settings;
+    if (s.roundTrip || s.startLat == null || s.endLat == null) { endDist = null; return; }
+    endDist = stops.map(function (x) { return crowMiles(x.lat, x.lng, s.endLat, s.endLng); });
+    startEndDist = crowMiles(s.startLat, s.startLng, s.endLat, s.endLng);
+  }
+
+  /* Legs that leave you further from the finish than you were. A third of a
+     mile of slack keeps a stop across the street from counting as a reversal. */
+  function outwardLegs(seq) {
+    if (!endDist) return 0;
+    var n = 0, prev = startEndDist;
+    for (var i = 0; i < seq.length; i++) {
+      var d = endDist[seq[i] - 1];
+      if (d - prev > 0.3) n++;
+      prev = d;
+    }
+    return n;
+  }
+
   function routeCost(seq, D, stops) {
     var s = state.settings, END = stops.length + 1;
     var t = parseTime(s.startTime); if (t == null) t = 8 * 60;
@@ -724,14 +754,18 @@
       prev = k;
     }
     drive += D[prev][END] / 60;
-    // Driving and waiting are both time off the clock, so they weigh the same:
-    // minimizing the two together is the same as ending the day earliest.
-    return drive + idle + late * 1000;
+    /* The weights are spread far enough apart that a lower tier can never buy
+       its way past a higher one: one wrong-way leg costs more than any day's
+       worth of driving. Driving and waiting weigh the same because both are
+       time off the clock - together they are the finish time. */
+    return late * 1e6 + outwardLegs(seq) * 1e4 + (drive + idle) + drive * 0.001;
   }
 
   function optimize(D, n, stops) {
     var order = [], i;
     var hasFixed = stops.some(function (x) { return parseTime(x.fixed) != null; });
+
+    buildEndDist(stops);
 
     if (hasFixed) {
       // Appointments go down first in clock order; every other stop is slotted
@@ -753,6 +787,11 @@
         }
         order.splice(bestPos, 0, k);
       });
+    } else if (endDist) {
+      /* Furthest from the finish first, so the seed already runs the right
+         way down the map and the local search only has to tidy it. */
+      for (i = 1; i <= n; i++) order.push(i);
+      order.sort(function (a, b) { return endDist[b - 1] - endDist[a - 1]; });
     } else {
       // Nearest-neighbour seed.
       var unvisited = [], cur = 0;
@@ -766,11 +805,15 @@
       }
     }
 
-    // 2-opt: reverse a slice of the day whenever that lowers the cost.
+    /* Two local moves, run together until neither one helps. 2-opt reverses a
+       slice, which untangles a crossing; Or-opt lifts a short run and drops it
+       elsewhere, which is the only way to move one stop that simply sits in the
+       wrong place - the EMERGE Radiant case 2-opt could never fix. */
     if (order.length > 2) {
       var best = routeCost(order, D, stops), improved = true, guard = 0;
       while (improved && guard++ < 40) {
         improved = false;
+
         for (var a = 0; a < order.length - 1; a++) {
           for (var b = a + 1; b < order.length; b++) {
             var cand2 = order.slice(0, a)
@@ -778,6 +821,19 @@
               .concat(order.slice(b + 1));
             var c2 = routeCost(cand2, D, stops);
             if (c2 < best - 0.25) { order = cand2; best = c2; improved = true; }
+          }
+        }
+
+        for (var len = 1; len <= 3; len++) {
+          for (var f = 0; f + len <= order.length; f++) {
+            var seg = order.slice(f, f + len);
+            var rest = order.slice(0, f).concat(order.slice(f + len));
+            for (var p2 = 0; p2 <= rest.length; p2++) {
+              if (p2 === f) continue;                     // same place it came from
+              var cand3 = rest.slice(0, p2).concat(seg, rest.slice(p2));
+              var c3 = routeCost(cand3, D, stops);
+              if (c3 < best - 0.25) { order = cand3; best = c3; improved = true; }
+            }
           }
         }
       }
