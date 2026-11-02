@@ -29,7 +29,24 @@
   var NOISE = /^(·|•|\||\d+(\.\d+)?\s*mi\b|open\b|clos(ed|es)\b|website|directions|call|share|save|schedule|book|more\b|sponsored|payment plans|onsite services|appointment required|online scheduling|write a review|see photos|see outside|\d+(\.\d+)?\s*\(|\d+(\.\d+)?★|★|reviews?\b|\d+\+?\s*years? in business|highlights?:|products and services:|located in:)/i;
 
   function clean(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
-  function isNoise(l) { return !l || NOISE.test(l) || l.length < 2; }
+
+  /* The reader hands back markdown, so a business name can arrive wearing
+     heading hashes, bold stars or link syntax. Strip the decoration, keep
+     the name. */
+  function cleanName(s) {
+    return clean((s || '')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')      /* images carry no name */
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')   /* [label](href) -> label */
+      .replace(/^[#>\s]+/, '')
+      .replace(/^[*_]{1,3}/, '').replace(/[*_]{1,3}$/, '')
+      .replace(/^[-\u2013\u2014\s]+/, ''));
+  }
+  function isNoise(l) {
+    if (!l || l.length < 2) return true;
+    if (/^!\[|^!?image\s*\d*\s*:/i.test(l)) return true;    /* ![Image 5: …](…) */
+    var bare = l.replace(/^[#>*_\-\s]+/, '');
+    return NOISE.test(l) || NOISE.test(bare);
+  }
 
   function digits(s) { var m = clean(s).match(PHONE); return m ? m[1] + m[2] + m[3] : ''; }
 
@@ -113,7 +130,7 @@
       if (!city) city = sc.city;
 
       out.push({
-        name: name, street: sc.street, suite: suite,
+        name: cleanName(name), street: sc.street, suite: suite,
         city: city, state: state, zip: zip, phone: phone
       });
     }
@@ -305,7 +322,14 @@
       noteCell.textContent = noteBits.join(' — ');
       if (noteBits.length) noteCell.className = 'warn-text';
 
-      row(body, [cb, m.row.name, addr, m.row.phone, m.sources.length + '× ' + m.sources.join(', '),
+      /* Names are read off rendered pages, so some arrive wrong. This is
+         the review step - let them be corrected here rather than after. */
+      var nameIn = document.createElement('input');
+      nameIn.className = 'name-edit';
+      nameIn.value = m.row.name || '';
+      nameIn.addEventListener('change', function () { m.row.name = clean(nameIn.value); });
+
+      row(body, [cb, nameIn, addr, m.row.phone, m.sources.length + '× ' + m.sources.join(', '),
                  status, noteCell],
           m.conflicts.length ? 'row-warn' : '');
     });
@@ -452,7 +476,7 @@
      body text for them. */
   function fromPage(text, fallbackName) {
     var title = (text.match(/^Title:\s*(.+)$/m) || [])[1] || '';
-    title = clean(title).split(/\s[|\-\u2013\u2014]\s/)[0].trim();
+    title = cleanName(title).split(/\s[|\-\u2013\u2014]\s/)[0].trim();
 
     var rows = parse(text);
 
@@ -483,7 +507,9 @@
   function looksNoiseName(n) {
     if (!n) return true;
     var t = n.replace(/^[#*\->\s]+/, '').trim();      /* markdown headings and bullets */
-    return !t ||
+    if (/click here|online store|learn more|read more|sign up|subscribe|book now|schedule now/i.test(t)) return true;
+    if (/[?!]$/.test(t)) return true;
+    return !t || /^!?image\b/i.test(t) ||
            /^(get directions|directions|book|call|website|email|home|menu|location|hours|contact|about|services|our team|find a provider)/i.test(t) ||
            t.length > 70 || t.indexOf('](') >= 0;
   }
@@ -508,20 +534,32 @@
 
       msg('Reading ' + jobs.length + ' site' + (jobs.length === 1 ? '' : 's') + '…');
 
-      jobs.reduce(function (chain, job) {
-        return chain.then(function () {
-          return fetchPage(job.url).then(function (text) {
-            var rows = fromPage(text, job.source);
-            done++;
-            if (rows.length) sets.push({ source: job.source, rows: rows });
-            else notes.push(job.source + ': nothing readable (the page may build its list with script)');
-            msg('Read ' + done + ' of ' + jobs.length + '…');
-          }).catch(function (e) {
-            done++;
-            notes.push(job.source + ': ' + ((e && e.message) || 'could not be read'));
-          });
+      /* Different hosts, so there is no reason to queue them behind each
+         other - that turned ten sites into ten round trips. Run a few at
+         a time instead: fast, but not a thundering herd at the reader. */
+      var LANES = 4;
+      var queue = jobs.slice();
+
+      function worker() {
+        var job = queue.shift();
+        if (!job) return Promise.resolve();
+        return fetchPage(job.url).then(function (text) {
+          var rows = fromPage(text, job.source);
+          if (rows.length) sets.push({ source: job.source, rows: rows });
+          else notes.push(job.source + ': nothing readable (the page may build its list with script)');
+        }).catch(function (e) {
+          notes.push(job.source + ': ' + ((e && e.message) || 'could not be read'));
+        }).then(function () {
+          done++;
+          msg('Read ' + done + ' of ' + jobs.length + '…');
+          return worker();
         });
-      }, Promise.resolve()).then(function () {
+      }
+
+      var lanes = [];
+      for (var L = 0; L < Math.min(LANES, jobs.length); L++) lanes.push(worker());
+
+      Promise.all(lanes).then(function () {
         btn.disabled = false;
         if (!sets.length) { msg(notes.join(' · ') || 'Nothing could be read from those addresses.', 'err'); return; }
 
