@@ -148,6 +148,11 @@
       var sc = splitStreetCity(raw);
       if (!city) city = sc.city;
 
+      /* A second unit designator can trail the first and land in the city:
+         "6200 S Syracuse Way Ste 260, Rm 15 Englewood" was parsing its
+         town as "Rm 15 Englewood". */
+      city = clean(city.replace(/^(?:ste|suite|unit|apt|bldg|fl|floor|rm|room|studio|#)\s*\.?\s*[A-Za-z0-9-]+\s+/i, ''));
+
       out.push({
         name: cleanName(name), street: sc.street, suite: suite,
         city: city, state: state, zip: zip, phone: phone
@@ -207,7 +212,7 @@
 
   /* ---------------- cross-reference ---------------- */
 
-  function gather() {
+  function gather(opts) {
     var jobs = [];
     for (var i = 1; i <= P.slots; i++) {
       var nameEl = $('srcName' + i), urlEl = $('srcUrl' + i);
@@ -217,7 +222,13 @@
       if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
       var label = clean(nameEl.value);
       if (!label) { try { label = new URL(u).hostname.replace(/^www\./, ''); } catch (e) { label = 'Site ' + i; } }
-      jobs.push({ source: label, url: u });
+
+      var t = templateFor(u);
+      if (t && opts && opts.location) {
+        u = t.build(opts);
+        if (!clean(nameEl.value)) label = t.label;
+      }
+      jobs.push({ source: label, url: u, templated: !!t });
     }
     return jobs;
   }
@@ -340,12 +351,61 @@
      back empty. Their individual provider pages read perfectly. */
   var READER = 'https://r.jina.ai/';
 
-  function fetchPage(url) {
+  /* Directory pages stream their listings in after loading, so the reader
+     sometimes snapshots the empty shell - roughly one read in three came
+     back at 5 KB with nothing in it while the same URL gave 32 KB on the
+     next try. A short shell is the tell; read it again. */
+  function fetchOnce(url) {
     return fetch(READER + url, { headers: { 'Accept': 'text/plain' } })
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.text();
       });
+  }
+
+  function fetchPage(url, attempt) {
+    attempt = attempt || 1;
+    return fetchOnce(url).then(function (text) {
+      var thin = text.length < 10000 && parse(text).length === 0;
+      if (thin && attempt < 3) {
+        return new Promise(function (go) { setTimeout(go, 1500); })
+          .then(function () { return fetchPage(url, attempt + 1); });
+      }
+      return text;
+    });
+  }
+
+  /* ---------------- site templates ---------------- */
+
+  /* Directories have their own search URLs. Rather than make you paste
+     one, the anchor and radius from step 1 are used to build it - which
+     is the point of setting them there. A URL with a path or a query of
+     its own is left alone: that is a specific page you chose. */
+  var TEMPLATES = [
+    {
+      host: /(^|\.)botoxcosmetic\.com$/i,
+      label: 'BOTOX Cosmetic directory',
+      searchPaths: ['', '/', '/search'],
+      /* the site only honours 2, 5 and 10 */
+      build: function (p) {
+        var d = p.radius <= 2 ? 2 : (p.radius <= 5 ? 5 : 10);
+        return 'https://www.botoxcosmetic.com/search?location=' +
+               encodeURIComponent(p.location) + '&distance=' + d + '-miles&page=1&sm=ALLE';
+      }
+    }
+  ];
+
+  function templateFor(url) {
+    var u;
+    try { u = new URL(url); } catch (e) { return null; }
+    for (var i = 0; i < TEMPLATES.length; i++) {
+      var t = TEMPLATES[i];
+      if (!t.host.test(u.hostname)) continue;
+      if (u.search) return null;                                   /* they gave their own query */
+      if (t.searchPaths.indexOf(u.pathname.replace(/\/$/, '')) < 0) return null;  /* a specific page */
+      return t;
+    }
+    return null;
   }
 
   /* The reader puts the page title on the first line and renders phone
@@ -522,6 +582,7 @@
 
   window.RP_SITES = {
     gather: gather,
+    templateFor: templateFor,
     fetchAll: fetchAll,
     crossReference: crossReference,
     parse: parse,

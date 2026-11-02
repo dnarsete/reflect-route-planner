@@ -20,6 +20,7 @@
   };
 
   var TIER = { 1: 'Esthetician', 2: 'RN', 3: 'NP / PA-C', 4: 'MD / DO' };
+  var READER_PROXY = 'https://r.jina.ai/';
 
   /* ---------------- helpers ---------------- */
 
@@ -149,32 +150,119 @@
      connected. Look each one up, and insist on a house number: a result
      that falls back to a town centre is worse than no result, because it
      lands the stop in the middle of a city and quietly bends the route. */
-  function geocodeRow(r) {
-    /* A street with no town or ZIP is not enough to place a pin. Asking
-       anyway returns the nearest road of that name, which is how a stop
-       ends up miles from the real address and silently bends the route.
-       Better to show no distance than a confident wrong one. */
-    if (!r.street || (!r.city && !r.zip)) return Promise.resolve(false);
-    /* Leave the suite out: "10881 West Asbury Ave Ste 200, Lakewood, CO"
-       finds nothing, the same line without the suite resolves exactly. */
-    var q = [r.street, r.city, r.state, r.zip].filter(Boolean).join(', ');
+  /* Two sources, strongest first.
+
+     The US Census geocoder has authoritative street-level data for US
+     addresses and only answers when it matches a real one - it never
+     falls back to a town centre, which is the failure that puts a stop
+     miles from where it belongs. OpenStreetMap is thinner on suburban
+     commercial addresses: of ten read off a directory, five had no house
+     number in OSM and all five resolved exactly through the Census.
+
+     Census blocks cross-origin calls, so it goes through the same reader
+     the websites use. */
+  var CENSUS = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress' +
+               '?benchmark=Public_AR_Current&format=json&address=';
+
+  function viaCensus(q) {
+    return fetch(READER_PROXY + CENSUS + encodeURIComponent(q))
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        var m = t.match(/"x"\s*:\s*(-?[\d.]+)\s*,\s*"y"\s*:\s*([\d.-]+)/);
+        if (!m) return null;
+        return { lat: parseFloat(m[2]), lng: parseFloat(m[1]) };
+      })
+      .catch(function () { return null; });
+  }
+
+  function viaOSM(q) {
     var url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' +
               encodeURIComponent(q);
     return fetch(url, { headers: { 'Accept': 'application/json' } })
       .then(function (x) { return x.json(); })
       .then(function (j) {
-        if (!j || !j.length) return false;
+        if (!j || !j.length) return null;
         var ad = j[0].address || {};
-        if (!ad.house_number || !ad.road) return false;      /* centroid - refuse it */
-        r.lat = parseFloat(j[0].lat);
-        r.lng = parseFloat(j[0].lon);
-        r.geocode_quality = 'house_number';
-        return true;
+        if (!ad.house_number || !ad.road) return null;   /* a centroid, not an address */
+        return { lat: parseFloat(j[0].lat), lng: parseFloat(j[0].lon) };
       })
-      .catch(function () { return false; });
+      .catch(function () { return null; });
   }
 
-  /* Nominatim asks for no more than one call a second. */
+  var jsonpN = 0;
+
+  /* The Census geocoder answers JSONP, which sidesteps the cross-origin
+     rule without a proxy. */
+  function jsonp(url) {
+    return new Promise(function (resolve, reject) {
+      var cb = '__rpGeo' + (++jsonpN);
+      var sc = document.createElement('script');
+      var settled = false;
+
+      function cleanup() {
+        try { delete window[cb]; } catch (e) { window[cb] = undefined; }
+        if (sc.parentNode) sc.parentNode.removeChild(sc);
+      }
+      window[cb] = function (data) { settled = true; cleanup(); resolve(data); };
+      sc.onerror = function () { if (!settled) { cleanup(); reject(new Error('lookup failed')); } };
+      sc.src = url + '&callback=' + cb;
+      document.head.appendChild(sc);
+      setTimeout(function () { if (!settled) { cleanup(); reject(new Error('timed out')); } }, 12000);
+    });
+  }
+
+  /* Census first: it is the authoritative US address file and it either
+     matches a real street address or returns nothing, so there is no
+     centroid to guard against. OpenStreetMap is missing house numbers for
+     a lot of suburban commercial addresses - 8775 E Orchard Rd and 5889 S
+     Greenwood Plaza Blvd are both absent from it and both exact here. */
+  function geocodeCensus(q) {
+    var url = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress' +
+              '?benchmark=Public_AR_Current&format=json&address=' + encodeURIComponent(q);
+    return jsonp(url).then(function (d) {
+      var m = d && d.result && d.result.addressMatches;
+      if (!m || !m.length) return null;
+      var c = m[0].coordinates;
+      return { lat: c.y, lng: c.x, quality: 'census' };
+    }).catch(function () { return null; });
+  }
+
+  /* Fallback, with the house-number guard: a result without one is a road
+     or town centroid, which puts the stop in the wrong place entirely. */
+  function geocodeOSM(q) {
+    var url = 'https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=us&q=' +
+              encodeURIComponent(q);
+    return fetch(url, { headers: { 'Accept': 'application/json' } })
+      .then(function (x) { return x.json(); })
+      .then(function (j) {
+        if (!j || !j.length) return null;
+        var ad = j[0].address || {};
+        if (!ad.house_number || !ad.road) return null;
+        return { lat: parseFloat(j[0].lat), lng: parseFloat(j[0].lon), quality: 'house_number' };
+      })
+      .catch(function () { return null; });
+  }
+
+  function geocodeRow(r) {
+    /* A street with no town or ZIP is not enough to place a pin. Asking
+       anyway returns the nearest road of that name, which is how a stop
+       ends up miles from the real address and quietly bends the route. */
+    if (!r.street || (!r.city && !r.zip)) return Promise.resolve(false);
+
+    /* Leave the suite out - "10881 West Asbury Ave Ste 200, Lakewood, CO"
+       finds nothing, the same line without it resolves exactly. */
+    var q = [r.street, r.city, r.state, r.zip].filter(Boolean).join(', ');
+
+    return geocodeCensus(q).then(function (hit) {
+      return hit || geocodeOSM(q);
+    }).then(function (hit) {
+      if (!hit) return false;
+      r.lat = hit.lat; r.lng = hit.lng; r.geocode_quality = hit.quality;
+      return true;
+    });
+  }
+
+  /* Census needs no throttle; OpenStreetMap asks for one call a second. */
   function geocodeAll(rows, onProgress) {
     var i = 0;
     function next() {
@@ -182,7 +270,7 @@
       var r = rows[i++];
       if (onProgress) onProgress(i, rows.length);
       return geocodeRow(r).then(function () {
-        return new Promise(function (go) { setTimeout(go, 1100); }).then(next);
+        return new Promise(function (go) { setTimeout(go, 250); }).then(next);
       });
     }
     return next();
@@ -192,7 +280,11 @@
 
   function runSearch() {
     var btn = $('btnFindSearch');
-    var jobs = $('useSaved') && window.RP_SITES ? window.RP_SITES.gather() : [];
+    /* the anchor text drives the directories' own search URLs */
+    var jobs = window.RP_SITES
+      ? window.RP_SITES.gather({ location: clean($('findAnchor').value),
+                                 radius: parseFloat($('findRadius').value) || 5 })
+      : [];
     var wantSaved = $('useSaved').checked;
 
     if (!wantSaved && !jobs.length) {
@@ -395,6 +487,128 @@
       });
   }
 
+  /* ---------------- excel ---------------- */
+
+  /* The found list, in the shape the route sheets have always taken, with
+     the search that produced it written across the top so the file still
+     makes sense a month later. */
+  function exportFound() {
+    if (!S.results.length) { msg('Nothing to export yet.', 'err'); return; }
+    if (typeof XLSX === 'undefined') { msg('Spreadsheet library did not load. Reload the page.', 'err'); return; }
+
+    var p = params();
+    var specs = p.specs.length ? p.specs.join(', ') : 'any';
+    var tier = p.minTier ? TIER[p.minTier] + ' or above' : 'any, including unverified';
+
+    var aoa = [
+      ['Accounts found — ' + (S.anchor ? S.anchor.label : '')],
+      ['Within', p.radius + ' miles', '', 'Specialty', specs],
+      ['Minimum licence', tier, '', 'Chains', p.hideChains ? 'excluded' : 'included'],
+      ['Day', $('findDay').value, '', 'Open that day only', p.mustBeOpen ? 'yes' : 'no'],
+      [],
+      ['#', 'Account', 'Address', 'Suite', 'City', 'State', 'Zip', 'Phone',
+       'Specialty', 'Licence', 'Source', 'Miles', 'Located', 'Notes']
+    ];
+
+    S.results.forEach(function (r, i) {
+      var c = r.row;
+      var notes = [];
+      if (r.isNew) notes.push('new');
+      if (r.flagged) notes.push(r.flagged);
+      (r.conflicts || []).forEach(function (x) {
+        notes.push(x.field + ': "' + x.a + '" vs "' + x.b + '"');
+      });
+      aoa.push([
+        i + 1, c.name || '', c.street || '', c.suite || '', c.city || '', c.state || '',
+        c.zip || '', c.phone || '',
+        (c.specialty || []).join(', '),
+        c.cert_tier ? TIER[c.cert_tier] : 'unverified',
+        r.sources.join(' + '),
+        r.dist == null ? '' : +r.dist.toFixed(1),
+        c.geocode_quality || (typeof c.lat === 'number' ? 'yes' : 'not located'),
+        notes.join(' — ')
+      ]);
+    });
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 4 }, { wch: 34 }, { wch: 30 }, { wch: 8 }, { wch: 18 }, { wch: 6 },
+                   { wch: 7 }, { wch: 15 }, { wch: 22 }, { wch: 14 }, { wch: 26 }, { wch: 7 },
+                   { wch: 13 }, { wch: 40 }];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Accounts found');
+
+    var d = new Date();
+    var stamp = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    var where = (S.anchor && S.anchor.label ? S.anchor.label : 'search').split(',')[0].replace(/[^A-Za-z0-9 ]/g, '');
+    XLSX.writeFile(wb, 'Accounts found ' + where + ' ' + stamp + '.xlsx');
+    msg('Downloaded ' + S.results.length + ' accounts.', 'ok');
+  }
+
+  /* ---------------- excel ---------------- */
+
+  /* The ticked accounts as a spreadsheet, in the column order these route
+     lists have always used. Chains are already excluded upstream; this is
+     what you would hand a rep. */
+  function exportExcel() {
+    var picked = [];
+    Array.prototype.slice.call(document.querySelectorAll('#findBody input:checked'))
+      .forEach(function (cb) { picked.push(S.results[parseInt(cb.getAttribute('data-idx'), 10)]); });
+    if (!picked.length) { msg('Tick at least one account to export.', 'err'); return; }
+
+    var p = params();
+    var rows = picked.map(function (r, i) {
+      var c = r.row;
+      return {
+        '#': i + 1,
+        'Account': c.name || '',
+        'Address': [c.street, c.suite && ('Ste ' + c.suite)].filter(Boolean).join(' '),
+        'City': c.city || '',
+        'State': c.state || '',
+        'Zip': c.zip || '',
+        'Phone': c.phone || '',
+        'Licensed clinician': c.clinicians || '',
+        'Licence': c.cert_tier ? TIER[c.cert_tier] : 'unverified',
+        'Specialty': (c.specialty || []).join(', '),
+        'Miles from anchor': r.dist == null ? '' : Number(r.dist.toFixed(1)),
+        'Website': c.website || '',
+        'Came from': r.sources.join(', ')
+      };
+    });
+
+    var ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 4 }, { wch: 34 }, { wch: 28 }, { wch: 16 }, { wch: 6 }, { wch: 7 },
+                   { wch: 14 }, { wch: 30 }, { wch: 13 }, { wch: 18 }, { wch: 9 },
+                   { wch: 28 }, { wch: 22 }];
+
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Accounts');
+
+    /* what the list was built from, so a sheet is self-explaining later */
+    var about = [
+      ['Searched around', S.anchor ? S.anchor.label : ''],
+      ['Within', p.radius + ' miles'],
+      ['Minimum licence', p.minTier ? TIER[p.minTier] + ' or above' : 'any, including unverified'],
+      ['Specialty', p.specs.length ? p.specs.join(', ') : 'any'],
+      ['Day', $('findDay').options[$('findDay').selectedIndex].text],
+      ['National chains', p.hideChains ? 'excluded' : 'included'],
+      ['Accounts', String(rows.length)],
+      ['Built', new Date().toLocaleString()]
+    ];
+    var ws2 = XLSX.utils.aoa_to_sheet([['Search', 'Setting']].concat(about));
+    ws2['!cols'] = [{ wch: 22 }, { wch: 44 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'How this was built');
+
+    var where = (S.anchor && S.anchor.label ? S.anchor.label : 'accounts')
+      .split(',')[0].replace(/[^A-Za-z0-9 ]/g, '').trim() || 'accounts';
+    var d = new Date();
+    var stamp = d.getFullYear() + '-' +
+                String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                String(d.getDate()).padStart(2, '0');
+
+    XLSX.writeFile(wb, where + ' accounts ' + stamp + '.xlsx');
+    msg('Exported ' + rows.length + ' accounts.', 'ok');
+  }
+
   /* ---------------- wiring ---------------- */
 
   function boot() {
@@ -403,6 +617,8 @@
     $('btnFindLocate').addEventListener('click', useMyLocation);
     $('btnFindSearch').addEventListener('click', runSearch);
     $('btnFindAdd').addEventListener('click', buildRoute);
+    $('btnFindExport').addEventListener('click', exportExcel);
+    $('btnFindExcel').addEventListener('click', exportFound);
 
     $('findEndMode').addEventListener('change', function () {
       $('findEndWrap').classList.toggle('hide', this.value !== 'custom');

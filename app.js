@@ -1205,7 +1205,7 @@
     XLSX.utils.book_append_sheet(wb, ws, 'Itinerary');
     var d = new Date();
     var stamp = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
-    XLSX.writeFile(wb, 'Route_' + stamp + '.xlsx');
+    XLSX.writeFile(wb, 'Route ' + stamp + '.xlsx');
   }
 
   /* ============================ wiring ============================ */
