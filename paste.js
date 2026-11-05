@@ -309,7 +309,7 @@
 
   /* ---------------- slots ---------------- */
 
-  function addSlot(presetName) {
+  function addSlot(presetName, presetUrl) {
     if (P.slots >= MAX_SOURCES) return;
     P.slots++;
     var i = P.slots;
@@ -332,6 +332,9 @@
     url.type = 'url';
     url.placeholder = 'https://…  paste the page address here';
     url.setAttribute('spellcheck', 'false');
+    /* The first row is BOTOX, so fill its address in. A labelled row with an
+       empty box looks configured and searches nothing - gather() skips it. */
+    if (presetUrl) url.value = presetUrl;
 
     wrap.appendChild(lab); wrap.appendChild(nm); wrap.appendChild(url);
     $('srcSlots').appendChild(wrap);
@@ -570,7 +573,7 @@
 
   function boot() {
     if (!$('srcSlots')) return;
-    addSlot('BOTOX Cosmetic directory');
+    addSlot('BOTOX Cosmetic directory', 'https://www.botoxcosmetic.com/search');
     $('btnSrcAdd').addEventListener('click', function () { addSlot(); });
     $('btnBrandBrowse').addEventListener('click', function () { $('brandFile').click(); });
     $('brandFile').addEventListener('change', function (e) {

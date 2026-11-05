@@ -13,6 +13,24 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
+  /* Read the URL the moment this file runs. When a link fails, Supabase sends
+     the browser back here with the reason in the hash, and the client library
+     clears it as soon as it starts - so grab it first or it is gone. */
+  var landed = (function () {
+    var out = {};
+    var raw = (location.hash || '').replace(/^#/, '') || (location.search || '').replace(/^\?/, '');
+    if (!raw) return out;
+    raw.split('&').forEach(function (pair) {
+      var i = pair.indexOf('=');
+      if (i < 1) return;
+      try { out[decodeURIComponent(pair.slice(0, i))] = decodeURIComponent(pair.slice(i + 1).replace(/\+/g, ' ')); }
+      catch (e) { /* a malformed pair is not worth failing sign-in over */ }
+    });
+    return out;
+  })();
+
+  var LAST_EMAIL = 'rp.lastEmail';
+
   var cfg = window.RP_CONFIG || {};
   var client = null;
   var settled = false;
@@ -57,8 +75,37 @@
     settle(user);
   }
 
+  /* Supabase's own wording is for developers. Say it the way it actually
+     happened, and always leave a next step. */
+  function explain(code, fallback) {
+    if (code === 'otp_expired' || code === 'access_denied') {
+      return 'That link had already been used. Sign-in links only open once — and mail '
+           + 'scanners often open them first. Tap the button for a fresh one and it '
+           + 'will work.';
+    }
+    if (code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit') {
+      return 'Too many links requested in the last hour. Wait a few minutes, then try again.';
+    }
+    return fallback || 'That sign-in link did not work. Tap the button for a new one.';
+  }
+
   function signedOut() {
     showGate(true);
+
+    /* Put the address back so a retry is one tap, not retyping it on a phone. */
+    try {
+      var last = localStorage.getItem(LAST_EMAIL);
+      if (last && $('authEmail') && !$('authEmail').value) $('authEmail').value = last;
+    } catch (e) { /* private browsing - not worth failing over */ }
+
+    if (landed.error || landed.error_code) {
+      msg(explain(landed.error_code || landed.error, landed.error_description), 'err');
+      var btn = $('authBtn');
+      if (btn) btn.textContent = 'Send me a new link';
+      /* Clear it so a reload does not keep showing a stale complaint. */
+      try { history.replaceState(null, '', location.origin + location.pathname); } catch (e) {}
+      landed = {};
+    }
     settle(null);
   }
 
@@ -79,6 +126,7 @@
 
     btn.disabled = true;
     msg('Sending…');
+    try { localStorage.setItem(LAST_EMAIL, email); } catch (e) { /* fine without it */ }
 
     client.auth.signInWithOtp({
       email: email,
@@ -89,12 +137,15 @@
         var m = (res.error.message || '').toLowerCase();
         if (m.indexOf('signups not allowed') >= 0 || m.indexOf('not found') >= 0) {
           msg('That address is not set up for this app yet.', 'err');
+        } else if (m.indexOf('rate limit') >= 0 || res.error.status === 429) {
+          msg(explain('over_email_send_rate_limit'), 'err');
         } else {
           msg(res.error.message || 'Could not send the link.', 'err');
         }
         return;
       }
-      msg('Check your email — the link is on its way. Open it in this same browser.', 'ok');
+      msg('Check your email — the link is on its way. Open it in this same browser, '
+        + 'and open it only once.', 'ok');
     }).catch(function () {
       btn.disabled = false;
       msg('Could not reach the server. Check your connection.', 'err');
