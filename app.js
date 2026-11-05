@@ -709,19 +709,27 @@
      least. Driving minutes alone is what produced the Elevation -> DollFace ->
      Original Glam zigzag - the total was fine and the map was wrong. */
 
-  /* Crow-flight miles from the start, and from each stop, to where the day
-     finishes. Null on a round trip: a loop cannot keep approaching its own
-     finish, so "one direction" means something else there - a single clean
-     circuit that never crosses itself, which is what least driving already
-     gives you. Rebuilt once per plan, because routeCost runs thousands of
-     times. */
+  /* Crow-flight miles from each stop to wherever the day finishes - the
+     ending address when there is one, otherwise back at the start. Either
+     way the day runs furthest-to-closest: get out to the far end early and
+     work your way home, so you are never driving back out again. Rebuilt
+     once per plan, because routeCost runs thousands of times. */
   var endDist = null, startEndDist = 0;
 
   function buildEndDist(stops) {
     var s = state.settings;
-    if (s.roundTrip || s.startLat == null || s.endLat == null) { endDist = null; return; }
-    endDist = stops.map(function (x) { return crowMiles(x.lat, x.lng, s.endLat, s.endLng); });
-    startEndDist = crowMiles(s.startLat, s.startLng, s.endLat, s.endLng);
+    var lat, lng;
+    if (!s.roundTrip && s.endLat != null) { lat = s.endLat; lng = s.endLng; }
+    else if (s.roundTrip && s.startLat != null) { lat = s.startLat; lng = s.startLng; }
+    else { endDist = null; return; }
+
+    endDist = stops.map(function (x) { return crowMiles(x.lat, x.lng, lat, lng); });
+
+    /* On a round trip the finish is the start, so the drive out to the far
+       end is unavoidable - leave the first leg uncounted rather than charge
+       the day for it. With a separate ending point the start has a real
+       distance to it, and the first leg is judged like any other. */
+    startEndDist = s.roundTrip ? Infinity : crowMiles(s.startLat, s.startLng, lat, lng);
   }
 
   /* Legs that leave you further from the finish than you were. A third of a
