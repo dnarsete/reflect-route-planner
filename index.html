@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#14181c">
 <title>Reflect Route Planner</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="styles.css?v=20261105b">
+<link rel="stylesheet" href="styles.css?v=20261105c">
 </head>
 <body>
 <div id="authGate" class="auth-gate hide">
@@ -109,10 +109,26 @@
             <label for="gKey">Google Maps API key (optional)</label>
             <input id="gKey" placeholder="Leave blank to use the free routing engine" autocomplete="off">
             <p class="note" style="margin-top:6px">
-              Blank is fine. Without a key the app routes on real roads with typical
-              speeds, then hands the finished route to Google Maps or Waze for live-traffic
-              turn-by-turn. With a key, drive times are calculated against Google's
-              predicted traffic for your departure time.
+              With a key, Google measures the drive between every pair of accounts
+              against its predicted traffic for your departure time, and the day is
+              sequenced on those numbers. Google is never asked to pick the order
+              itself &mdash; it does not know the furthest-to-closest rule.
+            </p>
+          </div>
+          <div>
+            <label for="aToken">Apple Maps token (optional backup)</label>
+            <input id="aToken" placeholder="Leave blank unless you have one" autocomplete="off">
+            <p class="note" style="margin-top:6px">
+              Used only when there is no Google key. Apple has no way to measure every
+              pair at once, so it times the legs you actually drive once the order is
+              settled. Needs a signed MapKit JS token from an Apple Developer account.
+            </p>
+          </div>
+          <div>
+            <p class="note">
+              With neither, the app routes on real roads at typical speeds &mdash; no
+              account and nothing to sign in to &mdash; then hands the finished day to
+              Google Maps, Waze or Apple Maps for live turn-by-turn.
             </p>
           </div>
         </details>
@@ -483,10 +499,10 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.0/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261105b"></script>
-<script src="auth.js?v=20261105b"></script>
-<script src="app.js?v=20261105b"></script>
-<script src="search.js?v=20261105b"></script>
-<script src="paste.js?v=20261105b"></script>
+<script src="config.js?v=20261105c"></script>
+<script src="auth.js?v=20261105c"></script>
+<script src="app.js?v=20261105c"></script>
+<script src="search.js?v=20261105c"></script>
+<script src="paste.js?v=20261105c"></script>
 </body>
 </html>

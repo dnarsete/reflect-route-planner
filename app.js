@@ -77,7 +77,7 @@
       endAddr: '', endLat: null, endLng: null,
       roundTrip: true, startTime: '08:00', dayEnd: '',
       visitMin: 20, bufMin: 0, bufMax: 30, lunchMin: 0,
-      lockOrder: false, gKey: ''
+      lockOrder: false, gKey: '', aToken: ''
     },
     stops: [],
     route: null
@@ -127,7 +127,7 @@
     ['visitMin', 'visitMin', 'number'], ['bufMin', 'bufMin', 'number'],
     ['bufMax', 'bufMax', 'number'], ['lunchMin', 'lunchMin', 'number'],
     ['roundTrip', 'roundTrip', 'checked'], ['lockOrder', 'lockOrder', 'checked'],
-    ['gKey', 'gKey', 'value']
+    ['gKey', 'gKey', 'value'], ['aToken', 'aToken', 'value']
   ];
   function settingsToForm() {
     SETTING_FIELDS.forEach(function (f) {
@@ -648,6 +648,97 @@
     });
   }
 
+  function useApple() {
+    return !!(state.settings.aToken && window.mapkit && window.mapkit.directions);
+  }
+
+  /* MapKit JS needs a signed token from an Apple Developer account. It is
+     handed over once, then the library asks for it through a callback. */
+  function loadApple() {
+    if (window.mapkit && window.mapkit.directions) return Promise.resolve();
+    var tok = state.settings.aToken;
+    if (!tok) return Promise.reject(new Error('No Apple Maps token.'));
+    return new Promise(function (resolve, reject) {
+      var sc = document.createElement('script');
+      sc.src = 'https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js';
+      sc.crossOrigin = 'anonymous';
+      sc.onload = function () {
+        try {
+          window.mapkit.init({ authorizationCallback: function (done) { done(tok); } });
+          window.mapkit.directions = new window.mapkit.Directions();
+          resolve();
+        } catch (e) { reject(new Error('Apple Maps rejected the token.')); }
+      };
+      sc.onerror = function () { reject(new Error('Apple Maps failed to load.')); };
+      document.head.appendChild(sc);
+    });
+  }
+
+  /* Google's own matrix, priced per element: it caps a single call at 100
+     pairs, so walk the grid in blocks and stitch the answers together. */
+  function matrixGoogle(pts) {
+    var n = pts.length;
+    var ll = pts.map(function (p) { return { lat: p.lat, lng: p.lng }; });
+    var dur = [], dist = [], i;
+    for (i = 0; i < n; i++) { dur.push(new Array(n).fill(0)); dist.push(new Array(n).fill(0)); }
+
+    var colStep = Math.min(n, 25);
+    var rowStep = Math.max(1, Math.min(25, Math.floor(100 / colStep)));
+    var blocks = [];
+    for (var r = 0; r < n; r += rowStep) {
+      for (var c = 0; c < n; c += colStep) {
+        blocks.push({ r: r, c: c, rn: Math.min(rowStep, n - r), cn: Math.min(colStep, n - c) });
+      }
+    }
+
+    var svc = new google.maps.DistanceMatrixService();
+    return blocks.reduce(function (chain, b) {
+      return chain.then(function () {
+        return new Promise(function (resolve, reject) {
+          svc.getDistanceMatrix({
+            origins: ll.slice(b.r, b.r + b.rn),
+            destinations: ll.slice(b.c, b.c + b.cn),
+            travelMode: google.maps.TravelMode.DRIVING,
+            drivingOptions: { departureTime: departureDate(),
+                              trafficModel: google.maps.TrafficModel.BEST_GUESS }
+          }, function (res, status) {
+            if (status !== 'OK') { reject(new Error('Google matrix: ' + status)); return; }
+            res.rows.forEach(function (row, ri) {
+              row.elements.forEach(function (el, ci) {
+                if (el.status !== 'OK') { reject(new Error('Google matrix: ' + el.status)); return; }
+                dur[b.r + ri][b.c + ci] = (el.duration_in_traffic || el.duration).value;
+                dist[b.r + ri][b.c + ci] = el.distance.value;
+              });
+            });
+            resolve();
+          });
+        });
+      });
+    }, Promise.resolve()).then(function () { return { dur: dur, dist: dist }; });
+  }
+
+  /* Apple times the legs you are actually going to drive - one call each,
+     rather than every pair, because MapKit has no matrix of its own. */
+  function legsApple(ordered) {
+    var jobs = [];
+    for (var i = 0; i < ordered.length - 1; i++) jobs.push([ordered[i], ordered[i + 1]]);
+    return jobs.reduce(function (chain, pair) {
+      return chain.then(function (acc) {
+        return new Promise(function (resolve) {
+          window.mapkit.directions.route({
+            origin: new mapkit.Coordinate(pair[0].lat, pair[0].lng),
+            destination: new mapkit.Coordinate(pair[1].lat, pair[1].lng),
+            transportType: mapkit.Directions.Transport.Automobile
+          }, function (err, data) {
+            var r = (!err && data && data.routes && data.routes[0]) ? data.routes[0] : null;
+            acc.push(r ? { secs: r.expectedTravelTime, metres: r.distance } : null);
+            resolve(acc);
+          });
+        });
+      });
+    }, Promise.resolve([]));
+  }
+
   /* Duration + distance matrix between every pair of points. */
   function matrixOSRM(pts) {
     var coords = pts.map(function (p) { return p.lng + ',' + p.lat; }).join(';');
@@ -680,26 +771,6 @@
                      Math.floor(mins / 60), mins % 60, 0, 0);
     if (d.getTime() < now.getTime() + 60000) d.setDate(d.getDate() + 1); // must be in the future
     return d;
-  }
-
-  /* Google Directions for an already-ordered set of points: traffic-aware legs. */
-  function directionsGoogle(pts, optimize) {
-    return new Promise(function (resolve, reject) {
-      var svc = new google.maps.DirectionsService();
-      svc.route({
-        origin: { lat: pts[0].lat, lng: pts[0].lng },
-        destination: { lat: pts[pts.length - 1].lat, lng: pts[pts.length - 1].lng },
-        waypoints: pts.slice(1, -1).map(function (p) {
-          return { location: { lat: p.lat, lng: p.lng }, stopover: true };
-        }),
-        optimizeWaypoints: !!optimize,
-        travelMode: google.maps.TravelMode.DRIVING,
-        drivingOptions: { departureTime: departureDate(), trafficModel: google.maps.TrafficModel.BEST_GUESS }
-      }, function (res, status) {
-        if (status === 'OK') resolve(res);
-        else reject(new Error('Google Directions: ' + status));
-      });
-    });
   }
 
   /* ============================ optimizer ============================ */
@@ -939,9 +1010,20 @@
     $('btnPlan').disabled = true;
     $('btnPlan').textContent = 'Planning...';
 
-    var boot = s.gKey ? loadGoogle().catch(function (e) {
-      toast(e.message + ' Using the free engine instead.', 'err', 5000);
-    }) : Promise.resolve();
+    /* Load whichever engine has credentials. Apple is only worth loading
+       when Google is not in play, since it is the backup. */
+    var boot;
+    if (s.gKey) {
+      boot = loadGoogle().catch(function (e) {
+        toast(e.message + ' Using the free engine instead.', 'err', 5000);
+      });
+    } else if (s.aToken) {
+      boot = loadApple().catch(function (e) {
+        toast(e.message + ' Using the free engine instead.', 'err', 5000);
+      });
+    } else {
+      boot = Promise.resolve();
+    }
 
     boot
       .then(function () { return geocodeAll(); })
@@ -974,67 +1056,56 @@
           .concat(stops.map(function (x) { return { lat: x.lat, lng: x.lng, label: x.name }; }))
           .concat([endPt]);
 
-        var anchors = [];
-        stops.forEach(function (x, i) {
-          var f = parseTime(x.fixed);
-          if (f != null) anchors.push({ idx: i + 1, time: f });
-        });
+        /* Engine ladder: Google when there is a key, Apple as the backup
+           timer, the free engine otherwise. Whichever supplies the numbers,
+           the sequence is ours - furthest from the finish to closest. Google
+           has its own optimiser and it does not know that rule, so it is
+           deliberately not asked to re-order anything. */
+        var engine = useGoogle() ? 'google' : 'osrm';
 
-        var googleReady = useGoogle();
-        var googleFits = googleReady && stops.length <= 23;
-        if (googleReady && !googleFits) {
-          toast('Google handles 23 stops per route; sequencing the rest with the free engine.', 'err', 5000);
-        }
+        var matrixWork = useGoogle()
+          ? matrixGoogle(pts).catch(function (e) {
+              toast(e.message + ' Falling back to the free engine.', 'err', 5000);
+              engine = 'osrm';
+              return matrixOSRM(pts);
+            })
+          : matrixOSRM(pts);
 
-        return matrixOSRM(pts).then(function (m) {
+        return matrixWork.then(function (m) {
           var order = s.lockOrder
             ? stops.map(function (_, i) { return i + 1; })
             : optimize(m.dur, stops.length, stops);
 
-          if (!googleFits) {
-            return geometryOSRM([pts[0]].concat(order.map(function (k) { return pts[k]; })).concat([pts[pts.length - 1]]))
-              .then(function (geo) {
-                var sch = buildSchedule(order, pts, m.dur, m.dist, stops);
-                sch.geometry = geo;
-                sch.engine = 'osrm';
-                return sch;
-              });
-          }
+          var ordered = [pts[0]]
+            .concat(order.map(function (k) { return pts[k]; }))
+            .concat([pts[pts.length - 1]]);
 
-          // Google pass: re-time (and optionally re-order) the legs against
-          // predicted traffic for the departure time.
-          var ordered = [pts[0]].concat(order.map(function (k) { return pts[k]; })).concat([pts[pts.length - 1]]);
-          var canOptimize = !s.lockOrder && anchors.length === 0;
-          return directionsGoogle(ordered, canOptimize).then(function (res) {
-            var route = res.routes[0];
-            var wpOrder = canOptimize && route.waypoint_order ? route.waypoint_order : null;
-            var finalOrder = wpOrder ? wpOrder.map(function (i) { return order[i]; }) : order;
+          /* Apple has no matrix, so it cannot sequence - by the time it is
+             asked the order is already settled. What it can do is time the
+             legs you actually drive, one call each. */
+          var refine = (engine === 'osrm' && useApple())
+            ? legsApple(ordered).then(function (legs) {
+                var END = stops.length + 1, prev = 0, used = 0;
+                legs.forEach(function (leg, i) {
+                  var cur = (i < order.length) ? order[i] : END;
+                  if (leg) {
+                    m.dur[prev][cur] = leg.secs;
+                    if (m.dist) m.dist[prev][cur] = leg.metres;
+                    used++;
+                  }
+                  prev = cur;
+                });
+                if (used) engine = 'apple';
+              }).catch(function () { /* a backup that fails just leaves the free numbers */ })
+            : Promise.resolve();
 
-            // Rebuild dense matrices from the returned legs, so the scheduler
-            // sees Google's traffic-aware numbers on the legs we actually drive.
-            var n = stops.length, END = n + 1;
-            var Dg = m.dur.map(function (row) { return row.slice(); });
-            var DISTg = m.dist ? m.dist.map(function (row) { return row.slice(); }) : null;
-            var prev = 0;
-            route.legs.forEach(function (leg, i) {
-              var cur = i < finalOrder.length ? finalOrder[i] : END;
-              var secs = (leg.duration_in_traffic || leg.duration).value;
-              Dg[prev][cur] = secs;
-              if (DISTg) DISTg[prev][cur] = leg.distance.value;
-              prev = cur;
+          return refine.then(function () {
+            return geometryOSRM(ordered).then(function (geo) {
+              var sch = buildSchedule(order, pts, m.dur, m.dist, stops);
+              sch.geometry = geo;
+              sch.engine = engine;
+              return sch;
             });
-            var sch = buildSchedule(finalOrder, pts, Dg, DISTg, stops);
-            sch.geometry = route.overview_path.map(function (p) { return [p.lat(), p.lng()]; });
-            sch.engine = 'google';
-            return sch;
-          }).catch(function (e) {
-            toast(e.message + ' Falling back to the free engine.', 'err', 5000);
-            return geometryOSRM([pts[0]].concat(order.map(function (k) { return pts[k]; })).concat([pts[pts.length - 1]]))
-              .then(function (geo) {
-                var sch = buildSchedule(order, pts, m.dur, m.dist, stops);
-                sch.geometry = geo; sch.engine = 'osrm';
-                return sch;
-              });
           });
         });
       })
@@ -1091,9 +1162,16 @@
     $('statMiles').textContent = r.totalDistM ? miles(r.totalDistM).toFixed(0) : '--';
     $('statEnd').textContent = fmtTime(r.finishMin);
 
-    $('itinHint').innerHTML = r.engine === 'google'
-      ? 'Drive times are Google&rsquo;s traffic prediction for a ' + fmtTime(r.startMin) + ' departure.'
-      : 'Drive times are road-speed estimates. Live traffic comes from Google Maps or Waze when you navigate.';
+    /* Say which engine produced these numbers, so a long leg can be read
+       as a prediction rather than a guess - or the other way round. */
+    $('itinHint').innerHTML =
+      r.engine === 'google'
+        ? 'Sequenced furthest-to-closest on Google&rsquo;s traffic prediction for a ' +
+          fmtTime(r.startMin) + ' departure.'
+        : r.engine === 'apple'
+          ? 'Sequenced furthest-to-closest, with each leg timed by Apple Maps.'
+          : 'Drive times are road-speed estimates. Live traffic comes from Google Maps, ' +
+            'Waze or Apple Maps when you navigate.';
 
     var html = '';
 
