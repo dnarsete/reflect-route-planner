@@ -275,3 +275,10 @@ details.adv > summary { cursor: pointer; padding: 6px 0; }
 details.adv > summary .note { margin-left: 6px; }
 tr.row-new td { background: rgba(47,174,111,.07); }
 .src-file { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+
+/* Past routes */
+.hist-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.hist-row:first-child{border-top:0}
+.hist-main{flex:1;min-width:0}
+.hist-main .nm{font-weight:600}
+.hist-main .ad{color:var(--muted);font-size:12px;line-height:1.45;overflow-wrap:anywhere}

@@ -117,6 +117,7 @@
       b.classList.toggle('active', b.dataset.tab === name);
     });
     if (name === 'map') fitMap();
+    if (name === 'route') loadHistory();
     window.scrollTo(0, 0);
   }
 
@@ -1110,11 +1111,20 @@
         });
       })
       .then(function (sch) {
+        sch.ends = {
+          startAddr: s.startAddr, startLat: s.startLat, startLng: s.startLng,
+          roundTrip: !!s.roundTrip,
+          endAddr: s.roundTrip ? s.startAddr : s.endAddr,
+          endLat: s.roundTrip ? s.startLat : s.endLat,
+          endLng: s.roundTrip ? s.startLng : s.endLng
+        };
+        sch.routeDate = todayISO();
         state.route = sch;
         renderRoute();
         renderMap();
         showTab('route');
         toast('Route planned.', 'ok');
+        saveRouteToHistory(sch);
       })
       .catch(function (e) {
         toast(e.message || String(e), 'err', 6000);
@@ -1155,7 +1165,7 @@
     $('routeEmpty').classList.toggle('hide', !!r);
     $('routeOut').classList.toggle('hide', !r);
     if (!r) return;
-    var s = state.settings;
+    var s = state.settings, e = routeEnds(r);
 
     $('statStops').textContent = r.items.length;
     $('statDrive').textContent = fmtMins(r.totalDriveMin);
@@ -1165,7 +1175,9 @@
     /* Say which engine produced these numbers, so a long leg can be read
        as a prediction rather than a guess - or the other way round. */
     $('itinHint').innerHTML =
-      r.engine === 'google'
+      r.engine === 'saved'
+        ? 'Saved route from ' + fmtDate(r.routeDate) + '. Times are as planned that day.'
+        : r.engine === 'google'
         ? 'Sequenced furthest-to-closest on Google&rsquo;s traffic prediction for a ' +
           fmtTime(r.startMin) + ' departure.'
         : r.engine === 'apple'
@@ -1179,7 +1191,7 @@
     html += '<div class="stop anchor">' +
       '<div class="badge">&#9654;</div>' +
       '<div class="body"><div class="nm">Start</div>' +
-      '<div class="ad">' + esc(s.startAddr) + '</div></div>' +
+      '<div class="ad">' + esc(e.startAddr) + '</div></div>' +
       '<div class="time-col"><div class="t">' + fmtTime(r.startMin) + '</div>' +
       '<div class="t2">depart</div></div></div>';
 
@@ -1218,8 +1230,8 @@
     html += legLine(r.lastDriveMin, r.lastDistM);
     html += '<div class="stop anchor">' +
       '<div class="badge">&#9873;</div>' +
-      '<div class="body"><div class="nm">' + (s.roundTrip ? 'Back to start' : 'End') + '</div>' +
-      '<div class="ad">' + esc(s.roundTrip ? s.startAddr : s.endAddr) + '</div></div>' +
+      '<div class="body"><div class="nm">' + (e.roundTrip ? 'Back to start' : 'End') + '</div>' +
+      '<div class="ad">' + esc(e.roundTrip ? e.startAddr : e.endAddr) + '</div></div>' +
       '<div class="time-col"><div class="t">' + fmtTime(r.finishMin) + '</div>' +
       '<div class="t2">arrive</div></div></div>';
 
@@ -1245,8 +1257,8 @@
 
   function gmapsChunks() {
     var r = state.route; if (!r) return [];
-    var s = state.settings;
-    var pts = [{ lat: s.startLat, lng: s.startLng }]
+    var e = routeEnds(r);
+    var pts = [{ lat: e.startLat, lng: e.startLng }]
       .concat(r.items.map(function (it) { return { lat: it.stop.lat, lng: it.stop.lng }; }))
       .concat([{ lat: r.pts[r.pts.length - 1].lat, lng: r.pts[r.pts.length - 1].lng }]);
 
@@ -1283,7 +1295,7 @@
     if (layer) map.removeLayer(layer);
     layer = L.layerGroup().addTo(map);
 
-    var s = state.settings;
+    var s = routeEnds(r);
     var bounds = [];
     function pin(lat, lng, text, cls, popup) {
       bounds.push([lat, lng]);
@@ -1331,10 +1343,11 @@
 
   /* ============================ exports ============================ */
   function itineraryText() {
-    var r = state.route, s = state.settings;
+    var r = state.route;
     if (!r) return '';
+    var s = routeEnds(r);
     var L2 = [];
-    L2.push('ROUTE - ' + new Date().toLocaleDateString());
+    L2.push('ROUTE - ' + fmtDate(r.routeDate || todayISO()));
     L2.push(fmtTime(r.startMin) + '  Depart  ' + s.startAddr);
     r.items.forEach(function (it) {
       L2.push('   drive ' + fmtMins(it.driveMin) + (it.distM ? ' / ' + miles(it.distM).toFixed(1) + ' mi' : ''));
@@ -1355,8 +1368,9 @@
   }
 
   function exportExcel() {
-    var r = state.route, s = state.settings;
+    var r = state.route;
     if (!r) { toast('Plan a route first.', 'err'); return; }
+    var s = routeEnds(r);
     var aoa = [['#', 'Arrive', 'Depart', 'Name', 'Address', 'Phone',
                 'Drive (min)', 'Miles', 'Minutes at stop', 'Fixed', 'Notes']];
     aoa.push(['', fmtTime(r.startMin), '', 'START', s.startAddr, '', '', '', '', '', '']);
@@ -1380,9 +1394,201 @@
                    { wch: 15 }, { wch: 11 }, { wch: 8 }, { wch: 15 }, { wch: 7 }, { wch: 30 }];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Itinerary');
-    var d = new Date();
-    var stamp = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    var stamp = r.routeDate || todayISO();
     XLSX.writeFile(wb, 'Route ' + stamp + '.xlsx');
+  }
+
+  /* ============================ route history ============================ */
+  /* Every planned route is kept in Supabase (routes + route_stops), one per
+     day: planning again on the same date replaces that day's copy, so
+     re-planning never stacks up duplicates. Each stop keeps its own name,
+     address and coordinates, because stops from an Excel file have no
+     account record to point back to. */
+  function todayISO() {
+    var d = new Date();
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+  function fmtDate(iso) {
+    if (!iso) return '';
+    var p = String(iso).split('-');
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  }
+  function minToSql(min) {                         // 510.4 -> "08:30:00"
+    var m = ((Math.round(min) % 1440) + 1440) % 1440;
+    return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2) + ':00';
+  }
+  function sqlToMin(t) {                           // "08:30:00" -> 510
+    if (!t) return null;
+    var p = String(t).split(':');
+    return (+p[0]) * 60 + (+p[1]);
+  }
+  /* Where a route starts and ends. A route carries its own; one planned
+     before history existed falls back to the current form. */
+  function routeEnds(r) {
+    if (r && r.ends) return r.ends;
+    var s = state.settings;
+    return {
+      startAddr: s.startAddr, startLat: s.startLat, startLng: s.startLng,
+      roundTrip: !!s.roundTrip,
+      endAddr: s.roundTrip ? s.startAddr : s.endAddr,
+      endLat: s.roundTrip ? s.startLat : s.endLat,
+      endLng: s.roundTrip ? s.startLng : s.endLng
+    };
+  }
+  function histDb() { return window.RP_DB; }
+  function histUser() { return window.RP_AUTH && window.RP_AUTH.user; }
+
+  function saveRouteToHistory(r) {
+    var db = histDb(), user = histUser();
+    if (!db || !user) return Promise.resolve();
+    var e = routeEnds(r), s = state.settings;
+    var day = r.routeDate || todayISO();
+
+    var row = {
+      owner_id: user.id,
+      route_date: day,
+      start_label: e.startAddr || null,
+      start_lat: e.startLat, start_lng: e.startLng,
+      end_mode: e.roundTrip ? 'start' : 'custom',
+      end_label: e.roundTrip ? null : (e.endAddr || null),
+      end_lat: e.roundTrip ? null : e.endLat,
+      end_lng: e.roundTrip ? null : e.endLng,
+      start_time: minToSql(r.startMin != null ? r.startMin : 8 * 60),
+      dwell_min: Math.round(s.visitMin) || 20,
+      total_drive_min: Math.round(r.totalDriveMin * 10) / 10,
+      total_miles: r.totalDistM ? Math.round(miles(r.totalDistM) * 10) / 10 : null,
+      finish_time: minToSql(r.finishMin)
+    };
+
+    return db.from('routes').delete().eq('owner_id', user.id).eq('route_date', day)
+      .then(function (res) {
+        if (res.error) throw res.error;
+        return db.from('routes').insert(row).select('id').single();
+      })
+      .then(function (res) {
+        if (res.error) throw res.error;
+        var id = res.data.id;
+        var stops = r.items.map(function (it) {
+          return {
+            route_id: id, seq: it.seq,
+            arrive_at: minToSql(it.arrive),
+            dwell_min: Math.round(it.visit),
+            leg_min: Math.round(it.driveMin * 10) / 10,
+            leg_miles: it.distM ? Math.round(miles(it.distM) * 10) / 10 : null,
+            name: it.stop.name || null,
+            address: it.stop.address || null,
+            phone: it.stop.phone || null,
+            lat: it.stop.lat, lng: it.stop.lng
+          };
+        });
+        return db.from('route_stops').insert(stops).then(function (res2) {
+          if (res2.error) throw res2.error;
+          r.savedId = id;
+          loadHistory();
+        });
+      })
+      .catch(function (err) {
+        toast("The route is planned, but it couldn't be saved to history: " +
+              ((err && err.message) || err), 'err', 7000);
+      });
+  }
+
+  function loadHistory() {
+    var box = $('historyList');
+    if (!box) return;
+    var db = histDb(), user = histUser();
+    if (!db || !user) { box.innerHTML = '<p class="note">Sign in to see past routes.</p>'; return; }
+    db.from('routes')
+      .select('id, route_date, start_label, total_miles, total_drive_min, finish_time, route_stops(count)')
+      .order('route_date', { ascending: false })
+      .limit(60)
+      .then(function (res) {
+        if (res.error) { box.innerHTML = '<p class="note warn">Couldn\'t load past routes: ' + esc(res.error.message) + '</p>'; return; }
+        var rows = res.data || [];
+        if (!rows.length) { box.innerHTML = '<p class="note">No saved routes yet. Each route you plan is saved here.</p>'; return; }
+        box.innerHTML = rows.map(function (x) {
+          var n = (x.route_stops && x.route_stops[0]) ? x.route_stops[0].count : 0;
+          var bits = [n + ' stop' + (n === 1 ? '' : 's')];
+          if (x.total_miles != null) bits.push(Math.round(x.total_miles) + ' mi');
+          if (x.total_drive_min != null) bits.push(fmtMins(+x.total_drive_min) + ' driving');
+          if (x.finish_time) bits.push('finish ' + fmtTime(sqlToMin(x.finish_time)));
+          return '<div class="hist-row">' +
+            '<div class="hist-main"><div class="nm">' + esc(fmtDate(x.route_date)) + '</div>' +
+            '<div class="ad">' + esc(bits.join(' · ')) +
+            (x.start_label ? '<br>From ' + esc(x.start_label) : '') + '</div></div>' +
+            '<button class="icon-btn sm" data-hist="' + esc(x.id) + '">Open</button></div>';
+        }).join('');
+      });
+  }
+
+  function openSavedRoute(id) {
+    var db = histDb();
+    if (!db) return;
+    toast('Opening saved route...');
+    db.from('routes')
+      .select('*, route_stops(*)')
+      .eq('id', id).single()
+      .then(function (res) {
+        if (res.error) throw res.error;
+        var x = res.data;
+        var stops = (x.route_stops || []).slice().sort(function (a, b) { return a.seq - b.seq; });
+        var round = x.end_mode !== 'custom';
+        var ends = {
+          startAddr: x.start_label || '', startLat: x.start_lat, startLng: x.start_lng,
+          roundTrip: round,
+          endAddr: round ? (x.start_label || '') : (x.end_label || ''),
+          endLat: round ? x.start_lat : x.end_lat,
+          endLng: round ? x.start_lng : x.end_lng
+        };
+        var legSum = 0, distSum = 0;
+        var items = stops.map(function (st) {
+          var arrive = sqlToMin(st.arrive_at);
+          var visit = st.dwell_min || x.dwell_min || 20;
+          var drive = +st.leg_min || 0, dist = st.leg_miles != null ? +st.leg_miles * 1609.344 : 0;
+          legSum += drive; distSum += dist;
+          return {
+            stop: { name: st.name || 'Stop ' + st.seq, address: st.address || '', phone: st.phone || '',
+                    lat: st.lat, lng: st.lng, notes: '' },
+            seq: st.seq, driveMin: drive, distM: dist,
+            arrive: arrive, depart: arrive + visit, visit: visit,
+            hold: 0, late: 0, buffer: 0, lunch: 0, fixedAt: null
+          };
+        });
+        var totalDrive = +x.total_drive_min || legSum;
+        var totalDist = x.total_miles != null ? +x.total_miles * 1609.344 : distSum;
+        var pts = [{ lat: ends.startLat, lng: ends.startLng, label: ends.startAddr }]
+          .concat(items.map(function (it) { return { lat: it.stop.lat, lng: it.stop.lng, label: it.stop.name }; }))
+          .concat([{ lat: ends.endLat, lng: ends.endLng, label: ends.endAddr }]);
+        var r = {
+          items: items,
+          startMin: sqlToMin(x.start_time),
+          finishMin: sqlToMin(x.finish_time),
+          lastDriveMin: Math.max(0, totalDrive - legSum),
+          lastDistM: Math.max(0, totalDist - distSum),
+          totalDriveMin: totalDrive,
+          totalDistM: totalDist,
+          pts: pts,
+          order: items.map(function (_, i) { return i + 1; }),
+          geometry: null,
+          engine: 'saved',
+          ends: ends,
+          routeDate: x.route_date,
+          savedId: x.id
+        };
+        state.route = r;
+        renderRoute();
+        renderMap();
+        window.scrollTo(0, 0);
+        /* Redraw the road line; the straight dashed one stands if this fails. */
+        var usable = pts.every(function (p) { return p.lat != null && p.lng != null; });
+        if (usable) geometryOSRM(pts).then(function (geo) {
+          if (state.route === r && geo && geo.length) { r.geometry = geo; renderMap(); }
+        }).catch(function () {});
+      })
+      .catch(function (err) {
+        toast("Couldn't open that route: " + ((err && err.message) || err), 'err', 6000);
+      });
   }
 
   /* ============================ wiring ============================ */
@@ -1390,6 +1596,13 @@
     load();
     settingsToForm();
     renderStops();
+
+    // Past routes
+    $('historyList').addEventListener('click', function (ev) {
+      var b = ev.target.closest('[data-hist]');
+      if (b) openSavedRoute(b.getAttribute('data-hist'));
+    });
+    if (window.RP_AUTH) window.RP_AUTH.ready(function () { loadHistory(); });
 
     // Tabs
     Array.prototype.forEach.call(document.querySelectorAll('.nav-btn'), function (b) {
