@@ -85,6 +85,7 @@
       S.anchor = { label: 'Current location', lat: pos.coords.latitude, lng: pos.coords.longitude, precise: true };
       $('findAnchor').value = 'Current location';
       msg('Anchored on your current location.', 'ok');
+      scheduleReplan();                          // the day now starts here
     }, function () { msg('Could not get your location. Type an address instead.', 'err'); },
     { enableHighAccuracy: true, timeout: 10000 });
   }
@@ -399,6 +400,8 @@
       });
       S.results = out;
       render();
+      if (out.length) scheduleReplan(0);
+      else { window.RP_APP.clearRoute(); routeMsg(''); }
 
       var nNew = out.filter(function (x) { return x.isNew; }).length;
       var dayCap = parseInt($('findMaxStops').value, 10) || 15;
@@ -446,6 +449,7 @@
       var cb = document.createElement('input');
       cb.type = 'checkbox'; cb.checked = true;
       cb.setAttribute('data-idx', String(idx));
+      cb.addEventListener('change', function () { scheduleReplan(); });
       td(cb);
 
       td(r.dist == null ? '—' : r.dist.toFixed(1));
@@ -455,7 +459,7 @@
         var inp = document.createElement('input');
         inp.className = 'name-edit';
         inp.value = r.row.name || '';
-        inp.addEventListener('change', function () { r.row.name = clean(inp.value); });
+        inp.addEventListener('change', function () { r.row.name = clean(inp.value); scheduleReplan(); });
         td(inp);
       } else {
         td(r.row.name);
@@ -479,42 +483,72 @@
       (S.results.length === 1 ? ' account found' : ' accounts found');
   }
 
-  /* Ticked rows become the day. Anything found on a website is saved to
-     the account list on the way through, so a site only has to be read
-     once - and then the route is planned outright, because step 1 already
-     knows where you are starting and when. */
-  function buildRoute() {
-    var picked = [];
-    Array.prototype.slice.call(document.querySelectorAll('#findBody input:checked'))
-      .forEach(function (cb) { picked.push(S.results[parseInt(cb.getAttribute('data-idx'), 10)]); });
+  /* ---------------- the route follows this list ---------------- */
 
-    if (!picked.length) { msg('Tick at least one account.', 'err'); return; }
+  /* Ticked rows are the day. There is no button to press: every change
+     on this page - ticking or unticking an account, renaming one, the
+     start time, calls in the day, where the day ends, the timing - asks
+     for a fresh plan, and Route and Map follow. Changes are gathered for
+     a moment first, so ticking several boxes in a row plans once. */
+  var replanTimer = null;
+
+  function routeMsg(text, kind) {
+    var el = $('findRouteMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'note' + (kind ? ' ' + kind : '');
+  }
+
+  function scheduleReplan(delay) {
+    if (!S.results.length) return;             // nothing found yet - nothing to plan
+    clearTimeout(replanTimer);
+    routeMsg('Updating the route…');
+    replanTimer = setTimeout(planFromFind, delay == null ? 700 : delay);
+  }
+
+  function picked() {
+    var out = [];
+    Array.prototype.slice.call(document.querySelectorAll('#findBody input[type=checkbox]:checked'))
+      .forEach(function (cb) { out.push(S.results[parseInt(cb.getAttribute('data-idx'), 10)]); });
+    return out;
+  }
+
+  function planFromFind() {
+    var day = picked();
+    var app = window.RP_APP;
+
+    if (!day.length) {
+      app.clearRoute();
+      routeMsg('No accounts ticked, so there is no route. Tick accounts to plan one.', 'warn');
+      return;
+    }
 
     var endMode = $('findEndMode').value;
     var endAddr = clean($('findEndAddr').value);
     if (endMode === 'custom' && !endAddr) {
-      msg('Type where the day should end, or switch back to "Back where I started".', 'err');
+      routeMsg('Type where the day should end, or switch back to "Back where I started".', 'err');
       return;
     }
 
     /* A search can turn up a hundred accounts; a day holds about fifteen.
        Results are sorted by distance, so keeping the first N keeps the
-       tight cluster these routes are built on rather than a sprawl. */
+       tight cluster these routes are built on rather than a sprawl. Untick
+       one of those and the next closest moves up into the day. */
     var cap = parseInt($('findMaxStops').value, 10) || 15;
     var trimmed = 0;
-    if (picked.length > cap) {
-      trimmed = picked.length - cap;
-      picked = picked.slice(0, cap);
+    if (day.length > cap) {
+      trimmed = day.length - cap;
+      day = day.slice(0, cap);
     }
 
-    var fresh = picked.filter(function (r) { return r.isNew; });
+    /* Anything found on a website is saved to the account list on the way
+       through, so a site only has to be read once. Each row is saved once,
+       however many times the day is re-planned. */
+    var fresh = day.filter(function (r) { return r.isNew && !r.saved; });
     var user = me();
-
-    msg((trimmed ? 'Taking the ' + cap + ' closest — ' + trimmed + ' further out left off. ' : '') +
-        (fresh.length ? 'Saving ' + fresh.length + ' new account' + (fresh.length === 1 ? '' : 's') + '…' : 'Building the route…'));
-
     var save = (fresh.length && user && db())
-      ? db().from('candidates').insert(fresh.map(function (r) {
+      ? (fresh.forEach(function (r) { r.saved = true; }),
+         db().from('candidates').insert(fresh.map(function (r) {
           return {
             owner_id: user.id, name: r.row.name,
             street: r.row.street || null, suite: r.row.suite || null,
@@ -526,28 +560,47 @@
             geocode_quality: r.row.geocode_quality || null,
             source: r.sources.join(' + ')
           };
+        })).then(function (res) {
+          if (res && res.error) fresh.forEach(function (r) { r.saved = false; });
+          else loadAll();
         }))
       : Promise.resolve();
+    save.catch(function () { fresh.forEach(function (r) { r.saved = false; }); });
 
-    save.catch(function () { /* a save failure must not cost you the route */ })
-      .then(function () {
-        window.RP_APP.setStops(picked.map(function (r) {
-          return {
-            name: r.row.name, address: fullAddress(r.row), phone: r.row.phone || '',
-            lat: r.row.lat, lng: r.row.lng
-          };
-        }));
-        if (fresh.length) loadAll();
-        msg('');
-        window.RP_APP.planWith({
-          startAddr: clean($('findAnchor').value) || 'Current location',
-          startLat: S.anchor ? S.anchor.lat : null,
-          startLng: S.anchor ? S.anchor.lng : null,
-          startTime: $('findStartTime').value || '09:00',
-          roundTrip: endMode === 'start',
-          endAddr: endMode === 'custom' ? endAddr : ''
-        });
+    /* The start is wherever "Search around" says now, which may have been
+       edited since the search ran. */
+    ensureAnchor().then(function (a) {
+      app.setStops(day.map(function (r) {
+        return {
+          name: r.row.name, address: fullAddress(r.row), phone: r.row.phone || '',
+          lat: r.row.lat, lng: r.row.lng
+        };
+      }));
+      return app.planWith({
+        startAddr: clean($('findAnchor').value) || 'Current location',
+        startLat: a.lat,
+        startLng: a.lng,
+        startTime: $('findStartTime').value || '09:00',
+        roundTrip: endMode === 'start',
+        endAddr: endMode === 'custom' ? endAddr : ''
       });
+    }).then(function (res) {
+      if (!res || res.superseded) return;        // a newer change is already being planned
+      if (!res.ok) { routeMsg('Route not updated: ' + res.error, 'err'); return; }
+      var r = res.route;
+      var n = r.items.length;
+      var mins = Math.round(r.finishMin) % 1440, h = Math.floor(mins / 60), m = mins % 60;
+      var finish = ((h % 12) || 12) + ':' + (m < 10 ? '0' : '') + m + (h < 12 ? ' AM' : ' PM');
+      var parts = ['Route updated: ' + n + ' stop' + (n === 1 ? '' : 's') + ', finishing ' + finish + '.'];
+      if (trimmed) parts.push(trimmed + ' ticked account' + (trimmed === 1 ? '' : 's') +
+                              ' further out left off to keep to ' + cap + ' calls.');
+      var missing = day.length - n;
+      if (missing > 0) parts.push(missing + ' address' + (missing === 1 ? '' : 'es') +
+                                  ' could not be located and ' + (missing === 1 ? 'is' : 'are') + ' not in the route.');
+      routeMsg(parts.join(' '), (trimmed || missing > 0) ? 'warn' : 'ok');
+    }).catch(function (e) {
+      routeMsg('Route not updated: ' + ((e && e.message) || 'something went wrong.'), 'err');
+    });
   }
 
   /* ---------------- excel ---------------- */
@@ -672,6 +725,10 @@
     msg('Exported ' + rows.length + ' accounts.', 'ok');
   }
 
+  function searchChanged() {
+    if (S.results.length) msg('Search settings changed. Press Find accounts to update the list.', 'warn');
+  }
+
   /* ---------------- wiring ---------------- */
 
   function boot() {
@@ -679,7 +736,7 @@
 
     $('btnFindLocate').addEventListener('click', useMyLocation);
     $('btnFindSearch').addEventListener('click', runSearch);
-    $('btnFindAdd').addEventListener('click', buildRoute);
+    $('btnFindView').addEventListener('click', function () { window.RP_APP.showTab('route'); });
     $('btnFindExport').addEventListener('click', exportExcel);
     $('btnFindExcel').addEventListener('click', exportFound);
 
@@ -691,13 +748,27 @@
       var boxes = document.querySelectorAll('#findBody input[type=checkbox]');
       var anyOff = Array.prototype.slice.call(boxes).some(function (b) { return !b.checked; });
       Array.prototype.slice.call(boxes).forEach(function (b) { b.checked = anyOff; });
+      scheduleReplan();
     });
+
+    /* Route settings re-plan the day straight away. */
+    ['findStartTime', 'findMaxStops', 'findEndMode', 'findEndAddr', 'findAnchor'].forEach(function (id) {
+      $(id).addEventListener('change', function () { scheduleReplan(); });
+    });
+
+    /* Search settings change which accounts exist at all, so they need a
+       fresh search rather than a re-plan. Say so instead of guessing. */
+    ['findAnchor', 'findRadius', 'findTier', 'findDay', 'findChains', 'findOpen'].forEach(function (id) {
+      $(id).addEventListener('change', searchChanged);
+    });
+    $('findSpecs').addEventListener('change', searchChanged);
 
     $('findAnchor').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
     });
 
     window.RP_FIND = {
+      replan: function () { scheduleReplan(); },
       all: function () { return S.all; },
       reload: function () { return loadAll().then(render); }
     };

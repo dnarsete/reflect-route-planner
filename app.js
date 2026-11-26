@@ -109,7 +109,7 @@
 
   /* ============================ tabs ============================ */
   function showTab(name) {
-    ['find', 'stops', 'route', 'map', 'help'].forEach(function (t) {
+    ['find', 'route', 'map', 'help'].forEach(function (t) {
       var el = $('tab-' + t);
       if (el) el.classList.toggle('hide', t !== name);
     });
@@ -149,334 +149,14 @@
     save();
   }
 
-  /* ============================ spreadsheet import ============================ */
-  var pendingRows = null, pendingHeaders = null, pendingName = '', lastBatch = null;
-  var pendingSheets = null;   // every sheet in the uploaded workbook
-
-  var COL_HINTS = {
-    name:    ['name', 'account', 'company', 'customer', 'client', 'business', 'contact', 'location', 'store'],
-    address: ['address', 'street', 'addr', 'address1', 'address 1', 'street address', 'location'],
-    city:    ['city', 'town'],
-    state:   ['state', 'province', 'st'],
-    zip:     ['zip', 'zipcode', 'zip code', 'postal', 'postal code'],
-    phone:   ['phone', 'telephone', 'tel', 'mobile', 'cell', 'phone number'],
-    minutes: ['minutes', 'min', 'duration', 'time needed', 'length', 'visit'],
-    time:    ['time', 'appointment', 'appt', 'fixed time', 'scheduled'],
-    notes:   ['notes', 'note', 'comment', 'comments', 'detail', 'details'],
-    lat:     ['lat', 'latitude'],
-    lng:     ['lng', 'long', 'longitude', 'lon']
-  };
-
-  function guessColumn(headers, key) {
-    var hints = COL_HINTS[key], lower = headers.map(function (h) { return String(h).toLowerCase().trim(); });
-    var i, j;
-    for (j = 0; j < hints.length; j++) for (i = 0; i < lower.length; i++) if (lower[i] === hints[j]) return headers[i];
-    for (j = 0; j < hints.length; j++) for (i = 0; i < lower.length; i++) if (lower[i].indexOf(hints[j]) !== -1) return headers[i];
-    return '';
-  }
-
-  /* Real spreadsheets often carry a title row, a blank row, or a logo above the
-     column names, so the header row is detected rather than assumed to be row 1.
-     The winning row is the one with the most cells that look like column names. */
-  function sheetToRows(ws) {
-    var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
-    var best = -1, bestScore = -1, i;
-
-    for (i = 0; i < Math.min(aoa.length, 15); i++) {
-      var cells = (aoa[i] || []).filter(function (c) { return String(c).trim() !== ''; });
-      if (cells.length < 2) continue;
-      var lower = cells.map(function (c) { return String(c).toLowerCase().trim(); });
-      var score = cells.length;
-      Object.keys(COL_HINTS).forEach(function (key) {
-        var hit = lower.some(function (c) {
-          return COL_HINTS[key].some(function (h) { return c === h || c.indexOf(h) !== -1; });
-        });
-        if (hit) score += 3;
-      });
-      if (score > bestScore) { bestScore = score; best = i; }
-    }
-    if (best < 0) return { headers: [], rows: [] };
-
-    var headers = [], seen = {};
-    aoa[best].forEach(function (h, idx) {
-      var name = String(h).trim() || ('Column ' + (idx + 1));
-      if (seen[name]) { seen[name]++; name = name + ' (' + seen[name] + ')'; }
-      else seen[name] = 1;
-      headers.push(name);
-    });
-
-    var rows = [];
-    for (i = best + 1; i < aoa.length; i++) {
-      var row = aoa[i] || [];
-      if (!row.some(function (c) { return String(c).trim() !== ''; })) continue;
-      var obj = {};
-      headers.forEach(function (h, idx) { obj[h] = row[idx] == null ? '' : row[idx]; });
-      rows.push(obj);
-    }
-    return { headers: headers, rows: rows };
-  }
-
-  function fileStatus(msg, kind, offerRemap) {
-    $('fileStatusWrap').classList.remove('hide');
-    $('fileStatus').innerHTML = '<span class="pill ' + (kind || '') + '">' + esc(msg) + '</span>';
-    $('btnRemap').classList.toggle('hide', !offerRemap);
-  }
-
-  function readFile(file) {
-    var ext = (file.name.split('.').pop() || '').toLowerCase();
-    var cantRead = {
-      numbers: 'Numbers files can\u2019t be read here. In Numbers: File \u203a Export To \u203a Excel, then upload the .xlsx.',
-      pages:   'That\u2019s a Pages document, not a spreadsheet.',
-      pdf:     'That\u2019s a PDF, not a spreadsheet.',
-      docx:    'That\u2019s a Word document, not a spreadsheet.',
-      doc:     'That\u2019s a Word document, not a spreadsheet.'
-    };
-    if (cantRead[ext]) { fileStatus(cantRead[ext], 'err'); toast(cantRead[ext], 'err', 6000); return; }
-
-    var reader = new FileReader();
-    pendingName = file.name;
-    fileStatus('Reading ' + file.name + '\u2026');
-
-    reader.onerror = function () {
-      fileStatus("Couldn't open " + file.name + '. Try re-saving it as .xlsx.', 'err');
-      toast("Couldn't open that file.", 'err', 5000);
-      $('file').value = '';
-    };
-    reader.onload = function (e) {
-      $('file').value = '';   // safe now: the bytes are already read
-      try {
-        var wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-        if (!wb.SheetNames.length) {
-          fileStatus('That file has no sheets in it.', 'err');
-          toast('That file has no sheets in it.', 'err'); return;
-        }
-        // A workbook often carries a cover sheet, a totals tab, or notes
-        // alongside the data. Parse them all and pick the one that actually
-        // looks like a stop list; the rest stay available in a dropdown.
-        pendingSheets = wb.SheetNames.map(function (nm) {
-          var pr = sheetToRows(wb.Sheets[nm]);
-          var addr = pr.headers.length ? guessColumn(pr.headers, 'address') : '';
-          var zip = pr.headers.length ? guessColumn(pr.headers, 'zip') : '';
-          return {
-            name: nm, headers: pr.headers, rows: pr.rows,
-            // Row count deliberately does NOT feed the score: when two sheets
-            // both look like stop lists, the one the author put first wins.
-            score: (addr ? 10000 : 0) + (zip ? 5000 : 0) + (pr.rows.length ? 1 : 0)
-          };
-        });
-        var usable = pendingSheets.filter(function (x) { return x.rows.length; });
-        if (!usable.length) {
-          fileStatus('No rows of data found in that workbook.', 'err');
-          toast('No rows of data found in that workbook.', 'err', 5000);
-          return;
-        }
-        var best = usable.slice().sort(function (a, b) { return b.score - a.score; })[0];
-        renderSheetPicker(best.name);
-        var parsed = { headers: best.headers, rows: best.rows };
-        pendingRows = parsed.rows;
-        pendingHeaders = parsed.headers;
-
-        // If the address column is obvious, import on the spot. Making the user
-        // find and press a second button after choosing a file is the single
-        // easiest way for this to look broken when it isn't.
-        if (guessColumn(pendingHeaders, 'address') ||
-            (guessColumn(pendingHeaders, 'city') && guessColumn(pendingHeaders, 'zip'))) {
-          doImport(true);
-        } else {
-          renderColumnMapper();
-          fileStatus(parsed.rows.length + ' rows read from ' + file.name +
-                     ' \u2014 tell it which column holds the address, then Import.', 'warn');
-          toast("Read the file, but couldn't spot an address column.", 'err', 5000);
-        }
-      } catch (err) {
-        fileStatus("Couldn't read that file: " + err.message, 'err');
-        toast("Couldn't read that file: " + err.message, 'err', 6000);
-      }
-    };
-    reader.readAsArrayBuffer(file);
-  }
-
-  function renderSheetPicker(selected) {
-    var wrap = $('sheetPickWrap');
-    if (!pendingSheets || pendingSheets.length < 2) { wrap.classList.add('hide'); return; }
-    $('sheetPick').innerHTML = pendingSheets.map(function (sh) {
-      return '<option value="' + esc(sh.name) + '"' + (sh.name === selected ? ' selected' : '') + '>' +
-             esc(sh.name) + ' (' + sh.rows.length + ' rows)</option>';
-    }).join('');
-    wrap.classList.remove('hide');
-  }
-
-  function useSheet(name) {
-    var sh = null;
-    (pendingSheets || []).forEach(function (x) { if (x.name === name) sh = x; });
-    if (!sh) return;
-    pendingHeaders = sh.headers;
-    pendingRows = sh.rows;
-    if (guessColumn(pendingHeaders, 'address') ||
-        (guessColumn(pendingHeaders, 'city') && guessColumn(pendingHeaders, 'zip'))) {
-      doImport(true);
-    } else {
-      renderColumnMapper();
-      fileStatus("Sheet '" + name + "' has " + sh.rows.length +
-                 ' rows - tell it which column holds the address, then Import.', 'warn');
-    }
-  }
-
-  function renderColumnMapper() {
-    var keys = ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time',
-                'notes', 'lat', 'lng'];
-    var labels = {
-      name: 'Name', address: 'Address', city: 'City', state: 'State', zip: 'Zip',
-      phone: 'Phone', minutes: 'Minutes at stop', time: 'Fixed time', notes: 'Notes',
-      lat: 'Latitude (optional)', lng: 'Longitude (optional)'
-    };
-    $('mapColsGrid').innerHTML = keys.map(function (k) {
-      var guess = guessColumn(pendingHeaders, k);
-      var opts = ['<option value="">&mdash; none &mdash;</option>'].concat(
-        pendingHeaders.map(function (h) {
-          return '<option value="' + esc(h) + '"' + (h === guess ? ' selected' : '') + '>' + esc(h) + '</option>';
-        })
-      ).join('');
-      return '<div><label>' + labels[k] + '</label><select data-col="' + k + '">' + opts + '</select></div>';
-    }).join('');
-    $('mapCols').classList.remove('hide');
-    setTimeout(function () {
-      $('mapCols').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 80);
-  }
-
-  function doImport(auto) {
-    var pick = {};
-    if (auto) {
-      ['name', 'address', 'city', 'state', 'zip', 'phone', 'minutes', 'time', 'notes',
-       'lat', 'lng'].forEach(function (k) { pick[k] = guessColumn(pendingHeaders, k); });
-    } else {
-      Array.prototype.forEach.call($('mapColsGrid').querySelectorAll('select'), function (s) {
-        pick[s.dataset.col] = s.value;
-      });
-    }
-    if (!pick.address && !pick.city && !pick.zip) {
-      toast('Pick at least an address column.', 'err'); return;
-    }
-    // Re-importing the same file replaces its stops rather than doubling them.
-    if (lastBatch) {
-      state.stops = state.stops.filter(function (x) { return x.batch !== lastBatch; });
-    }
-    var batch = uid();
-    var added = 0, skipped = 0, preLocated = 0;
-    pendingRows.forEach(function (r) {
-      var get = function (k) { return pick[k] ? String(r[pick[k]] || '').trim() : ''; };
-      var parts = [get('address'), get('city'), [get('state'), get('zip')].filter(Boolean).join(' ')];
-      var addr = parts.filter(Boolean).join(', ');
-      if (!addr) { skipped++; return; }
-      var mins = parseInt(get('minutes'), 10);
-      // A sheet that already carries coordinates skips geocoding entirely -
-      // no rate limit, no failed lookups on messy suite numbers.
-      var la = parseFloat(get('lat')), ln = parseFloat(get('lng'));
-      var haveCoords = isFinite(la) && isFinite(ln) &&
-                       la >= -90 && la <= 90 && ln >= -180 && ln <= 180 &&
-                       !(la === 0 && ln === 0);
-      state.stops.push({
-        id: uid(), batch: batch,
-        name: get('name') || addr,
-        address: addr,
-        phone: get('phone'),
-        notes: get('notes'),
-        minutes: isFinite(mins) && mins > 0 ? mins : null,
-        fixed: normalizeTimeCell(get('time')),
-        lat: haveCoords ? la : null,
-        lng: haveCoords ? ln : null,
-        geo: haveCoords ? 'ok' : 'pending'
-      });
-      if (haveCoords) preLocated++;
-      added++;
-    });
-    lastBatch = batch;
-    $('mapCols').classList.add('hide');
-    save(); renderStops();
-
-    if (!added) {
-      fileStatus('No usable addresses in ' + pendingName +
-                 ' \u2014 check which column is mapped to Address.', 'err', true);
-      toast('No usable addresses found.', 'err', 5000);
-      renderColumnMapper();
-      return;
-    }
-    fileStatus(added + ' stops imported from ' + pendingName +
-               (skipped ? ' (' + skipped + ' rows had no address)' : '') +
-               (preLocated === added ? ' \u2014 coordinates already in the sheet, nothing to look up.'
-                                     : ' \u2014 looking up addresses\u2026'), 'ok', true);
-    toast(added + ' stops imported. Looking up addresses\u2026', 'ok');
-    geocodeAll();
-  }
-
-  function normalizeTimeCell(v) {
-    if (!v) return '';
-    v = String(v).trim();
-    var m = /^(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)?$/i.exec(v);
-    if (m) {
-      var h = +m[1], mi = +m[2], ap = (m[3] || '').toLowerCase();
-      if (ap === 'pm' && h < 12) h += 12;
-      if (ap === 'am' && h === 12) h = 0;
-      return (h < 10 ? '0' : '') + h + ':' + (mi < 10 ? '0' : '') + mi;
-    }
-    // Excel serial fraction of a day (0.5 = noon)
-    var n = Number(v);
-    if (isFinite(n) && n > 0 && n < 1) {
-      var tot = Math.round(n * 1440);
-      return (Math.floor(tot / 60) < 10 ? '0' : '') + Math.floor(tot / 60) + ':' +
-             (tot % 60 < 10 ? '0' : '') + (tot % 60);
-    }
-    return '';
-  }
-
-  function downloadTemplate() {
-    var aoa = [
-      ['Name', 'Address', 'City', 'State', 'Zip', 'Phone', 'Minutes', 'Time', 'Notes'],
-      ['Cherry Creek Med Spa', '2500 E 1st Ave', 'Denver', 'CO', '80206', '303-555-0142', 45, '', 'Reorder + new display'],
-      ['Boulder Aesthetics', '1136 Pearl St', 'Boulder', 'CO', '80302', '303-555-0177', 30, '11:00', 'Owner only available at 11'],
-      ['LoDo Skin Studio', '1550 Wewatta St', 'Denver', 'CO', '80202', '720-555-0119', 30, '', '']
-    ];
-    var ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 26 }, { wch: 24 }, { wch: 14 }, { wch: 7 }, { wch: 8 },
-                   { wch: 15 }, { wch: 9 }, { wch: 10 }, { wch: 30 }];
-    var wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Stops');
-    XLSX.writeFile(wb, 'Route_Planner_Template.xlsx');
-  }
-
-  /* ============================ stops table ============================ */
+  /* ============================ header ============================ */
+  /* The Stops tab is gone - Find is where accounts come from - so the
+     header just says how big the planned day is. */
   function renderStops() {
-    var body = $('stopsBody');
-    var has = state.stops.length > 0;
-    $('stopsEmpty').classList.toggle('hide', has);
-    $('stopsTable').classList.toggle('hide', !has);
-    $('brandSub').textContent = has
-      ? state.stops.length + ' stop' + (state.stops.length === 1 ? '' : 's') + ' loaded'
-      : 'No stops loaded';
-    if (!has) { body.innerHTML = ''; return; }
-
-    body.innerHTML = state.stops.map(function (s, i) {
-      var badge = s.geo === 'ok' ? '<span class="pill ok">Yes</span>'
-                : s.geo === 'fail' ? '<span class="pill err">No</span>'
-                : '<span class="pill warn">&mdash;</span>';
-      return '<tr data-id="' + s.id + '">' +
-        '<td class="num">' + (i + 1) + '</td>' +
-        '<td><input data-f="name" value="' + esc(s.name) + '"></td>' +
-        '<td><input data-f="address" value="' + esc(s.address) + '"></td>' +
-        '<td><input data-f="phone" value="' + esc(s.phone || '') + '"></td>' +
-        '<td class="w-dur"><input data-f="minutes" type="number" min="5" step="5" ' +
-          'placeholder="' + state.settings.visitMin + '" value="' + (s.minutes || '') + '"></td>' +
-        '<td class="w-time"><input data-f="fixed" type="time" value="' + esc(s.fixed || '') + '"></td>' +
-        '<td>' + badge + '</td>' +
-        '<td class="w-act"><button class="icon-btn sm danger" data-del="' + s.id + '">&times;</button></td>' +
-        '</tr>';
-    }).join('');
-  }
-
-  function stopById(id) {
-    for (var i = 0; i < state.stops.length; i++) if (state.stops[i].id === id) return state.stops[i];
-    return null;
+    var el = $('brandSub');
+    if (!el) return;
+    var n = state.route ? state.route.items.length : 0;
+    el.textContent = n ? n + ' stop' + (n === 1 ? '' : 's') + ' planned' : 'No route yet';
   }
 
   /* ============================ geocoding ============================ */
@@ -558,14 +238,12 @@
     return attempt();
   }
 
+  /* Lookup progress shows in the route line on Find, where the work starts. */
   function progress(done, total, msg) {
-    $('geoProgress').classList.remove('hide');
-    $('geoBar').style.width = (total ? Math.round(done / total * 100) : 0) + '%';
-    $('geoMsg').textContent = msg;
+    var el = $('findRouteMsg');
+    if (el) { el.textContent = msg; el.className = 'note'; }
   }
-  function progressDone() {
-    setTimeout(function () { $('geoProgress').classList.add('hide'); }, 900);
-  }
+  function progressDone() { /* the planner writes the final line when it finishes */ }
 
   /* Look up every stop that doesn't have coordinates yet, plus start/end. */
   function geocodeAll() {
@@ -996,20 +674,27 @@
   }
 
   /* ============================ plan ============================ */
-  var planning = false;
+  /* Find re-plans on its own every time something changes, so a request
+     can arrive while a plan is still running. Only one plan runs at a
+     time; the newest request waits its turn, and a plan that has been
+     overtaken by a newer request is thrown away rather than shown. Every
+     call resolves with { ok, route } or { ok: false, error }. */
+  var planning = false, queued = null, planGen = 0;
 
   function planRoute() {
-    if (planning) return;
+    if (planning) {
+      if (queued) queued.resolve({ ok: false, superseded: true });
+      return new Promise(function (resolve) { queued = { resolve: resolve }; });
+    }
+    var gen = ++planGen;
     formToSettings();
     var s = state.settings;
 
-    if (!s.startAddr.trim()) { showTab('stops'); $('startAddr').focus(); toast('Enter a starting address first.', 'err'); return; }
-    if (!s.roundTrip && !s.endAddr.trim()) { showTab('stops'); $('endAddr').focus(); toast('Enter an ending address, or check "end back at the starting point".', 'err'); return; }
-    if (!state.stops.length) { showTab('stops'); toast('Add some stops first.', 'err'); return; }
+    if (!s.startAddr.trim()) return Promise.resolve({ ok: false, error: 'Type where the day starts.' });
+    if (!s.roundTrip && !s.endAddr.trim()) return Promise.resolve({ ok: false, error: 'Type where the day should end.' });
+    if (!state.stops.length) return Promise.resolve({ ok: false, error: 'Tick at least one account.' });
 
     planning = true;
-    $('btnPlan').disabled = true;
-    $('btnPlan').textContent = 'Planning...';
 
     /* Load whichever engine has credentials. Apple is only worth loading
        when Google is not in play, since it is the backup. */
@@ -1026,7 +711,7 @@
       boot = Promise.resolve();
     }
 
-    boot
+    return boot
       .then(function () { return geocodeAll(); })
       .then(function () {
         var stops = state.stops.filter(function (x) { return x.geo === 'ok' && x.lat != null; });
@@ -1111,6 +796,7 @@
         });
       })
       .then(function (sch) {
+        if (queued || gen !== planGen) return { ok: false, superseded: true };   // overtaken by a newer change
         sch.ends = {
           startAddr: s.startAddr, startLat: s.startLat, startLng: s.startLng,
           roundTrip: !!s.roundTrip,
@@ -1122,20 +808,34 @@
         state.route = sch;
         renderRoute();
         renderMap();
-        showTab('route');
-        toast('Route planned.', 'ok');
+        renderStops();
         saveRouteToHistory(sch);
+        return { ok: true, route: sch };
       })
       .catch(function (e) {
-        toast(e.message || String(e), 'err', 6000);
-        /* never leave them looking at an empty Route tab */
-        if (!state.route) showTab('stops');
+        return { ok: false, error: (e && e.message) || String(e) };
       })
-      .then(function () {
+      .then(function (result) {
         planning = false;
-        $('btnPlan').disabled = false;
-        $('btnPlan').textContent = 'Plan route';
+        var next = queued;
+        queued = null;
+        if (next) planRoute().then(next.resolve);   // run the newest request now
+        return result;
       });
+  }
+
+  /* Nothing ticked on Find: the day is empty, so Route and Map are too. */
+  function clearRoute() {
+    if (queued) { queued.resolve({ ok: false, superseded: true }); queued = null; }
+    planGen++;                                   // a plan still running is discarded
+    var el = $('findRouteMsg');
+    if (el) el.textContent = '';
+    state.stops = [];
+    state.route = null;
+    save();
+    renderRoute();
+    renderMap();
+    renderStops();
   }
 
   /* ============================ render route ============================ */
@@ -1285,7 +985,12 @@
 
   function renderMap() {
     var r = state.route;
-    if (!r) return;
+    if (!r) {                                    // the day was emptied: wipe the old pins too
+      if (layer && map) { map.removeLayer(layer); layer = null; }
+      lastBounds = null;
+      $('mapHint').textContent = 'Tick accounts on Find to see the route drawn here.';
+      return;
+    }
     if (!map) {
       map = L.map('map', { scrollWheelZoom: false });
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1609,7 +1314,7 @@
       b.addEventListener('click', function () { showTab(b.dataset.tab); });
     });
 
-    // Settings
+    // Timing settings live on Find now. Changing one re-plans the day.
     SETTING_FIELDS.forEach(function (f) {
       var el = $(f[0]); if (!el) return;
       el.addEventListener('change', function () {
@@ -1617,118 +1322,11 @@
         if (f[1] === 'endAddr') { state.settings.endLat = state.settings.endLng = null; }
         formToSettings();
         $('endWrap').classList.toggle('hide', !!state.settings.roundTrip);
-        if (f[1] === 'visitMin') renderStops();
+        if (window.RP_FIND && window.RP_FIND.replan) window.RP_FIND.replan();
       });
     });
 
-    $('btnUseLocation').addEventListener('click', function () {
-      if (!navigator.geolocation) { toast('This browser has no location access.', 'err'); return; }
-      toast('Getting your location...');
-      navigator.geolocation.getCurrentPosition(function (pos) {
-        state.settings.startLat = pos.coords.latitude;
-        state.settings.startLng = pos.coords.longitude;
-        var url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=' +
-                  pos.coords.latitude + '&lon=' + pos.coords.longitude;
-        fetch(url).then(function (r) { return r.json(); }).then(function (j) {
-          state.settings.startAddr = (j && j.display_name) ||
-            (pos.coords.latitude.toFixed(5) + ', ' + pos.coords.longitude.toFixed(5));
-          $('startAddr').value = state.settings.startAddr;
-          save(); toast('Starting point set.', 'ok');
-        }).catch(function () {
-          state.settings.startAddr = pos.coords.latitude.toFixed(5) + ', ' + pos.coords.longitude.toFixed(5);
-          $('startAddr').value = state.settings.startAddr;
-          save();
-        });
-      }, function () { toast('Location permission denied.', 'err'); }, { timeout: 10000 });
-    });
-
-    // File upload
-    var drop = $('drop'), file = $('file');
-    drop.addEventListener('click', function (e) {
-      // The input lives inside the drop zone, so its own programmatic click
-      // bubbles straight back here. Without this guard the picker is asked to
-      // open twice and the second request cancels the first.
-      if (e.target === file || e.target.id === 'btnBrowse') return;
-      file.click();
-    });
-    $('btnBrowse').addEventListener('click', function (e) {
-      e.stopPropagation();
-      file.click();
-    });
-    file.addEventListener('change', function () {
-      if (file.files && file.files[0]) readFile(file.files[0]);
-      // NOTE: the input is deliberately NOT cleared here. Safari backs the File
-      // object with the input's selection, so clearing it while FileReader is
-      // still working kills the read with no error. readFile() clears it once
-      // the bytes are in hand.
-    });
-    ['dragenter', 'dragover'].forEach(function (ev) {
-      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
-    });
-    ['dragleave', 'drop'].forEach(function (ev) {
-      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); });
-    });
-    drop.addEventListener('drop', function (e) {
-      if (e.dataTransfer.files && e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
-    });
-
-    $('btnImport').addEventListener('click', function () { doImport(false); });
-    $('sheetPick').addEventListener('change', function () { useSheet(this.value); });
-    $('btnRemap').addEventListener('click', function () {
-      if (!pendingHeaders) { toast('Upload a file first.', 'err'); return; }
-      renderColumnMapper();
-    });
-    $('btnCancelImport').addEventListener('click', function () {
-      pendingRows = pendingHeaders = null;
-      $('mapCols').classList.add('hide');
-    });
-    $('btnTemplate').addEventListener('click', downloadTemplate);
-    $('btnTemplate2').addEventListener('click', downloadTemplate);
-
-    $('btnAddRow').addEventListener('click', function () {
-      state.stops.push({ id: uid(), name: '', address: '', phone: '', notes: '',
-                         minutes: null, fixed: '', lat: null, lng: null, geo: 'pending' });
-      save(); renderStops();
-      var rows = $('stopsBody').querySelectorAll('tr');
-      var lastRow = rows[rows.length - 1];
-      if (lastRow) lastRow.querySelector('input').focus();
-    });
-
-    $('btnGeocode').addEventListener('click', function () {
-      formToSettings();
-      state.stops.forEach(function (s) { if (s.geo === 'fail') s.geo = 'pending'; });
-      geocodeAll();
-    });
-
-    $('btnClear').addEventListener('click', function () {
-      if (!state.stops.length) return;
-      if (!confirm('Remove all ' + state.stops.length + ' stops?')) return;
-      state.stops = []; state.route = null;
-      save(); renderStops(); renderRoute();
-      toast('Stops cleared.');
-    });
-
-    // Inline edits in the stops table
-    $('stopsBody').addEventListener('input', function (e) {
-      var inp = e.target.closest('input'); if (!inp) return;
-      var tr = e.target.closest('tr'); if (!tr) return;
-      var s = stopById(tr.dataset.id); if (!s) return;
-      var f = inp.dataset.f;
-      if (f === 'minutes') s.minutes = parseInt(inp.value, 10) || null;
-      else {
-        s[f] = inp.value;
-        if (f === 'address') { s.lat = s.lng = null; s.geo = 'pending'; }
-      }
-      save();
-    });
-    $('stopsBody').addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-del]'); if (!btn) return;
-      state.stops = state.stops.filter(function (s) { return s.id !== btn.dataset.del; });
-      save(); renderStops();
-    });
-
     // Route actions
-    $('btnPlan').addEventListener('click', planRoute);
     $('btnGmaps').addEventListener('click', function () {
       var c = gmapsChunks();
       if (!c.length) { toast('Plan a route first.', 'err'); return; }
@@ -1750,8 +1348,8 @@
     });
   }
 
-  /* Minimal surface for search.js: push found accounts straight into the
-     planner's stop list, then jump to the Stops tab so they can be planned. */
+  /* The surface search.js drives: Find owns the account list, and every
+     change to it replaces the planner's stops and re-plans the day. */
   window.RP_APP = {
     addStops: function (rows) {
       var batch = uid(), added = 0;
@@ -1783,9 +1381,8 @@
       return this.addStops(rows);
     },
 
-    /* Lets Find build the day outright: it already knows where you are
-       starting from, so there is no reason to send you to another tab to
-       retype it. Writes the planner's own fields, then plans. */
+    /* Find hands over where the day starts and ends, then plans. Returns
+       the planner's promise so Find can report the result in place. */
     planWith: function (o) {
       o = o || {};
       if (o.startAddr != null) $('startAddr').value = o.startAddr;
@@ -1805,8 +1402,9 @@
         state.settings.startLat = state.settings.startLng = null;
       }
       state.settings.endLat = state.settings.endLng = null;
-      planRoute();
+      return planRoute();
     },
+    clearRoute: clearRoute,
     showTab: showTab,
     toast: toast
   };
